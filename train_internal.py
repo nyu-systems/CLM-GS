@@ -40,7 +40,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     start_from_this_iteration = 1
 
     # Init parameterized scene
-    gaussians = GaussianModel(dataset_args.sh_degree)
+    gaussians = GaussianModel(sh_degree=dataset_args.sh_degree, offload=args.offload)
 
     with torch.no_grad():
         scene = Scene(args, gaussians)
@@ -157,6 +157,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                     background,
                     batched_strategies=batched_strategies,
                     mode="train",
+                    offload=args.offload,
                 )
             )
             batched_image, batched_compute_locally = gsplat_render_final(
@@ -195,6 +196,29 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         loss_sum.backward()
         timers.stop("backward")
         utils.check_initial_gpu_memory_usage("after backward")
+        
+        # Sync grad with cpu.
+        if args.offload:
+            means3D, opacities, scales, rotations, features_dc, features_rest = batched_screenspace_pkg["param_handles"]
+            send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
+
+            gaussians._xyz.grad = torch.zeros_like(gaussians._xyz)
+            gaussians._xyz.grad[send2gpu_filter] = means3D.grad.cpu()
+
+            gaussians._opacity.grad = torch.zeros_like(gaussians._opacity)
+            gaussians._opacity.grad[send2gpu_filter] = opacities.grad.cpu()
+
+            gaussians._scaling.grad = torch.zeros_like(gaussians._scaling)
+            gaussians._scaling.grad[send2gpu_filter] = scales.grad.cpu()
+
+            gaussians._rotation.grad = torch.zeros_like(gaussians._rotation)
+            gaussians._rotation.grad[send2gpu_filter] = rotations.grad.cpu()
+            
+            gaussians._features_dc.grad = torch.zeros_like(gaussians._features_dc)
+            gaussians._features_dc.grad[send2gpu_filter] = features_dc.grad.cpu()
+
+            gaussians._features_rest.grad = torch.zeros_like(gaussians._features_rest)
+            gaussians._features_rest.grad[send2gpu_filter] = features_rest.grad.cpu()
 
         with torch.no_grad():
             # Adjust workload division strategy.
@@ -247,13 +271,14 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 pipe_args,
                 background,
                 args.backend,
+                args.offload,
             )
             end2end_timers.start()
 
             # Densification
             if args.backend == "gsplat":
                 gsplat_densification(
-                    iteration, scene, gaussians, batched_screenspace_pkg
+                    iteration, scene, gaussians, batched_screenspace_pkg, offload=args.offload
                 )
             else:
                 densification(iteration, scene, gaussians, batched_screenspace_pkg)
@@ -353,7 +378,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
 
 
 def training_report(
-    iteration, l1_loss, testing_iterations, scene: Scene, pipe_args, background, backend
+    iteration, l1_loss, testing_iterations, scene: Scene, pipe_args, background, backend, offload=False
 ):
     args = utils.get_args()
     log_file = utils.get_log_file()
@@ -432,6 +457,7 @@ def training_report(
                                 background,
                                 batched_strategies=batched_strategies,
                                 mode="test",
+                                offload=offload,
                             )
                         )
                         batched_image, _ = gsplat_render_final(

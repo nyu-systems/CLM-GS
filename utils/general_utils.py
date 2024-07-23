@@ -398,7 +398,7 @@ def get_expon_lr_func(
 
 
 def strip_lowerdiag(L):
-    uncertainty = torch.zeros((L.shape[0], 6), dtype=torch.float, device="cuda")
+    uncertainty = torch.zeros((L.shape[0], 6), dtype=torch.float, device=L.device)
 
     uncertainty[:, 0] = L[:, 0, 0]
     uncertainty[:, 1] = L[:, 0, 1]
@@ -420,7 +420,7 @@ def build_rotation(r):
 
     q = r / norm[:, None]
 
-    R = torch.zeros((q.size(0), 3, 3), device="cuda")
+    R = torch.zeros((q.size(0), 3, 3), device=r.device)
 
     r = q[:, 0]
     x = q[:, 1]
@@ -440,7 +440,7 @@ def build_rotation(r):
 
 
 def build_scaling_rotation(s, r):
-    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device=s.device)
     R = build_rotation(r)
 
     L[:, 0, 0] = s[:, 0]
@@ -680,7 +680,7 @@ def load_checkpoint(args):
             )
         (model_params, start_from_this_iteration) = merge_multiple_checkpoints(
             local_processed_file_names
-        )
+        ) # TODO: Check this: it loads params to gpu.
         file_name = local_processed_file_names
     elif number_files < DEFAULT_GROUP.size():
         assert (
@@ -699,7 +699,7 @@ def load_checkpoint(args):
             file_name,
             DEFAULT_GROUP.size() // number_files,
             DEFAULT_GROUP.rank() // number_files,
-        )
+        ) # TODO: Check this: it loads params to gpu.
 
     if args.drop_duplicate_gaussians_coeff != 1.0:
         model_params = drop_duplicate_gaussians(

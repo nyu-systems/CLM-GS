@@ -85,7 +85,7 @@ def densification(iteration, scene, gaussians, batched_screenspace_pkg):
             )
 
 
-def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg):
+def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg, offload=False):
     args = utils.get_args()
     timers = utils.get_timers()
     log_file = utils.get_log_file()
@@ -98,6 +98,7 @@ def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg):
         timers.start("densification_update_stats")
         image_width = batched_screenspace_pkg["image_width"]
         image_height = batched_screenspace_pkg["image_height"]
+        send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
         batched_screenspace_mean2D_grad = batched_screenspace_pkg[
             "batched_locally_preprocessed_mean2D"
         ].grad
@@ -109,11 +110,23 @@ def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg):
                 ],
             )
         ):
-            gaussians.max_radii2D[visibility_filter] = torch.max(
-                gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
+            if args.offload:
+                radii = radii.cpu()
+                visibility_filter = visibility_filter.cpu()
+                batched_grad = batched_screenspace_mean2D_grad[i].cpu()
+                
+                send2gpu_visibility_filter = torch.full_like(gaussians.max_radii2D, False, dtype=torch.bool, device="cpu")
+                send2gpu_visibility_filter[send2gpu_filter] = visibility_filter
+            else:
+                batched_grad = batched_screenspace_mean2D_grad[i]
+                send2gpu_visibility_filter = visibility_filter
+                
+            gaussians.max_radii2D[send2gpu_visibility_filter] = torch.max(
+                gaussians.max_radii2D[send2gpu_visibility_filter], radii[visibility_filter]
             )
             gaussians.gsplat_add_densification_stats(
-                batched_screenspace_mean2D_grad[i],
+                batched_grad,
+                send2gpu_visibility_filter,
                 visibility_filter,
                 image_width,
                 image_height,

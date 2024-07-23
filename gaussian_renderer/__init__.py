@@ -1045,6 +1045,7 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
     scaling_modifier=1.0,
     batched_strategies=None,
     mode="train",
+    offload=False,
 ):
     """
     Render the scene.
@@ -1061,12 +1062,48 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
     ########## [START] Prepare Gaussians for rendering ##########
     if timers is not None:
         timers.start("forward_prepare_gaussians")
-    means3D = pc.get_xyz
-    opacities = pc.get_opacity
-    scales = pc.get_scaling * scaling_modifier
-    rotations = pc.get_rotation
-    shs = pc.get_features  # (N, K, 3)
-    sh_degree = pc.active_sh_degree
+    
+    param_handles = []
+    send2gpu_filter = None    
+    if offload:
+        # TODO: Optimizate this: use send2gpu_filter from prev iter to load only updated means3D
+        means3D_all = pc._xyz.detach().cuda()
+        # TODO: Imple the send2gpu() func to compute the filter
+        send2gpu_filter = torch.ones(means3D_all.shape[0], dtype=torch.bool, device="cuda")
+        
+        # Prepare gaussians on GPU. NOTE: Make sure that all tensors on gpu is differentiable.
+        means3D = means3D_all[send2gpu_filter].detach().requires_grad_(True) # on gpu
+        param_handles.append(means3D)
+        
+        send2gpu_filter = send2gpu_filter.cpu()
+        
+        _opacities = pc._opacity[send2gpu_filter].detach().cuda().requires_grad_(True)
+        opacities = pc.opacity_activation(_opacities)
+        param_handles.append(_opacities)
+        
+        _scales = pc._scaling[send2gpu_filter].detach().cuda().requires_grad_(True)
+        scales = pc.scaling_activation(_scales)
+        param_handles.append(_scales)
+        
+        _rotations = pc._rotation[send2gpu_filter].detach().cuda().requires_grad_(True)
+        rotations = pc.rotation_activation(_rotations)
+        param_handles.append(_rotations)
+        
+        _features_dc = pc._features_dc[send2gpu_filter].detach().cuda().requires_grad_(True)
+        _features_rest = pc._features_rest[send2gpu_filter].detach().cuda().requires_grad_(True)
+        shs = torch.cat([_features_dc, _features_rest], dim=1)
+        param_handles.append(_features_dc)
+        param_handles.append(_features_rest)
+        
+        sh_degree = pc.active_sh_degree
+    else:
+        means3D = pc.get_xyz
+        opacities = pc.get_opacity
+        scales = pc.get_scaling * scaling_modifier
+        rotations = pc.get_rotation
+        shs = pc.get_features  # (N, K, 3)
+        sh_degree = pc.active_sh_degree
+        
     if timers is not None:
         timers.stop("forward_prepare_gaussians")
     utils.check_initial_gpu_memory_usage("after forward_prepare_gaussians")
@@ -1162,6 +1199,8 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
             "gpui_to_gpuj_imgk_size": [
                 [[batched_means2D[i].shape[0] for i in range(B)]]
             ],
+            "param_handles": param_handles,
+            "send2gpu_filter": send2gpu_filter,
         }
 
         return batched_screenspace_pkg

@@ -75,6 +75,7 @@ class AuxiliaryParams(ParamGroup):
         self.log_interval = 250
         self.llffhold = 8
         self.backend = "default" # "default", "gsplat"
+        self.offload = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
