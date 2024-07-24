@@ -1046,6 +1046,9 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
     batched_strategies=None,
     mode="train",
     offload=False,
+    means3D_all=None,
+    prev_filter=None,
+    prev_filter_cpu=None,
 ):
     """
     Render the scene.
@@ -1067,7 +1070,13 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
     send2gpu_filter = None    
     if offload:
         # TODO: Optimizate this: use send2gpu_filter from prev iter to load only updated means3D
-        means3D_all = pc._xyz.detach().cuda()
+        # NOTE: After densification, (means3D_all, prev_filter, prev_filter_cpu) are reset to None.
+        if prev_filter is not None and prev_filter_cpu is not None and means3D_all is not None:
+            means3D_all[prev_filter] = pc._xyz[prev_filter_cpu].detach().cuda()
+        else:
+            means3D_all = pc._xyz.detach().cuda()
+        param_handles.append(means3D_all)
+            
         # TODO: Imple the send2gpu() func to compute the filter
         send2gpu_filter = torch.ones(means3D_all.shape[0], dtype=torch.bool, device="cuda")
         
@@ -1075,22 +1084,22 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
         means3D = means3D_all[send2gpu_filter].detach().requires_grad_(True) # on gpu
         param_handles.append(means3D)
         
-        send2gpu_filter = send2gpu_filter.cpu()
+        send2gpu_filter_cpu = send2gpu_filter.cpu()
         
-        _opacities = pc._opacity[send2gpu_filter].detach().cuda().requires_grad_(True)
+        _opacities = pc._opacity[send2gpu_filter_cpu].detach().cuda().requires_grad_(True)
         opacities = pc.opacity_activation(_opacities)
         param_handles.append(_opacities)
         
-        _scales = pc._scaling[send2gpu_filter].detach().cuda().requires_grad_(True)
+        _scales = pc._scaling[send2gpu_filter_cpu].detach().cuda().requires_grad_(True)
         scales = pc.scaling_activation(_scales)
         param_handles.append(_scales)
         
-        _rotations = pc._rotation[send2gpu_filter].detach().cuda().requires_grad_(True)
+        _rotations = pc._rotation[send2gpu_filter_cpu].detach().cuda().requires_grad_(True)
         rotations = pc.rotation_activation(_rotations)
         param_handles.append(_rotations)
         
-        _features_dc = pc._features_dc[send2gpu_filter].detach().cuda().requires_grad_(True)
-        _features_rest = pc._features_rest[send2gpu_filter].detach().cuda().requires_grad_(True)
+        _features_dc = pc._features_dc[send2gpu_filter_cpu].detach().cuda().requires_grad_(True)
+        _features_rest = pc._features_rest[send2gpu_filter_cpu].detach().cuda().requires_grad_(True)
         shs = torch.cat([_features_dc, _features_rest], dim=1)
         param_handles.append(_features_dc)
         param_handles.append(_features_rest)
@@ -1201,6 +1210,7 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
             ],
             "param_handles": param_handles,
             "send2gpu_filter": send2gpu_filter,
+            "send2gpu_filter_cpu": send2gpu_filter_cpu,
         }
 
         return batched_screenspace_pkg
