@@ -120,6 +120,15 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             assert gaussians._opacity.is_pinned(), "[at the start of an iteration] `self._opacity` is not in pinned memory"
             assert gaussians._features_dc.is_pinned(), "[at the start of an iteration] `self._features_dc` is not in pinned memory"
             assert gaussians._features_rest.is_pinned(), "[at the start of an iteration] `self._features_rest` is not in pinned memory"
+        elif args.offload and args.mxw_debug == 'cat':
+            assert gaussians._parameters.is_pinned(), "[at the start of an iteration] `self._parameters` is not in pinned memory"
+        
+        if args.trace_cuda_mem:
+            if (iteration % args.log_interval) == 1 or (iteration % args.densification_interval) == 0:
+                torch.cuda.memory._record_memory_history()
+                log_file.write(
+                    "[ITER {}] Tracing cuda memory usage.\n".format(iteration)
+                )
         
         # Step Initialization
         if iteration // args.bsz % 30 == 0:
@@ -192,6 +201,13 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                     prev_filter_cpu=send2gpu_filter_cpu,
                 )
             )
+            
+            if (iteration % args.log_interval) == 1:
+                num_visible = batched_screenspace_pkg["batched_locally_preprocessed_visibility_filter"].sum().item()
+                log_file.write(
+                    "<<< # iteration: {}, visible gaussians this iter = {}/{} (%{:.2f}) >>>\n".format(iteration, num_visible, gaussians._xyz.shape[0], (100 * num_visible / gaussians._xyz.shape[0]))
+                )
+            
             # utils.memory_report("after preprocessing")
             batched_image, batched_compute_locally = gsplat_render_final(
                 batched_screenspace_pkg, batched_strategies
@@ -231,127 +247,130 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         timers.stop("backward")
         utils.check_initial_gpu_memory_usage("after backward")
         # utils.memory_report("after backward")
+        del loss_sum # fix memory leak
         
-        # Sync grad with cpu.
-        if args.offload:
-            timers.start("sync_grad_to_cpu")
-            if args.mxw_debug == 'fused':                    
-                timers.start("get all handles")
-                means3D_all, means3D, opacities, scales, rotations, features_dc, features_rest = batched_screenspace_pkg["param_handles"]
-                send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
-                timers.stop("get all handles")
-                
-                timers.start("zero out grads")
-                N = gaussians._xyz.shape[0]
-                means3D_grad_buffer[:N, :].zero_()
-                opacities_grad_buffer[:N, :].zero_()
-                scales_grad_buffer[:N, :].zero_()
-                rotations_grad_buffer[:N, :].zero_()
-                features_dc_grad_buffer[:N, :, :].zero_()
-                features_rest_grad_buffer[:N, :, :].zero_()
-                timers.stop("zero out grads")
-                
-                timers.start("fused grad transfer")
-                send2cpu(
-                    means3D.grad,
-                    opacities.grad,
-                    scales.grad,
-                    rotations.grad,
-                    features_dc.grad,
-                    features_rest.grad,
-                    send2gpu_filter,
-                    means3D_grad_buffer[:N, :],
-                    opacities_grad_buffer[:N, :],
-                    scales_grad_buffer[:N, :],
-                    rotations_grad_buffer[:N, :],
-                    features_dc_grad_buffer[:N, :, :],
-                    features_rest_grad_buffer[:N, :, :]
-                ) # This kernel blocks the cpu.
-                timers.stop("fused grad transfer")
-                
-                # Free grads on gpu
-                means3D.grad = None
-                opacities.grad = None
-                scales.grad = None
-                rotations.grad = None
-                features_dc.grad = None
-                features_rest.grad = None
-                
-                timers.start("load from buffer")
-                gaussians._xyz.grad = means3D_grad_buffer[:N, :]
-                gaussians._opacity.grad = opacities_grad_buffer[:N, :]
-                gaussians._scaling.grad = scales_grad_buffer[:N, :]
-                gaussians._rotation.grad = rotations_grad_buffer[:N, :]
-                gaussians._features_dc.grad = features_dc_grad_buffer[:N, :, :]
-                gaussians._features_rest.grad = features_rest_grad_buffer[:N, :, :]
-                timers.stop("load from buffer") 
-            elif args.mxw_debug == 'cat':
-                timers.start("get all handles")
-                means3D_all, means3D, opacities, scales, rotations, features_dc, features_rest = batched_screenspace_pkg["param_handles"]
-                send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
-                timers.stop("get all handles")
-                
-                timers.start("zero out grads")
-                N = gaussians._xyz.shape[0]
-                parameters_grad_buffer[:N, :].zero_()
-                timers.stop("zero out grads")
-                
-                timers.start("fused grad transfer")
-                send2cpu_cat_buffer(
-                    means3D.grad,
-                    opacities.grad,
-                    scales.grad,
-                    rotations.grad,
-                    features_dc.grad,
-                    features_rest.grad,
-                    send2gpu_filter,
-                    gaussians.param_dims,
-                    gaussians.param_dims_presum_rshift,
-                    gaussians.col2attr,
-                    parameters_grad_buffer[:N, :],
-                ) # This kernel blocks the cpu.
-                timers.stop("fused grad transfer")
-                
-                # Free grads on gpu
-                means3D.grad = None
-                opacities.grad = None
-                scales.grad = None
-                rotations.grad = None
-                features_dc.grad = None
-                features_rest.grad = None
-                
-                timers.start("load from buffer")
-                gaussians._parameters.grad = parameters_grad_buffer[:N, :]
-                timers.stop("load from buffer") 
-            else:
-                timers.start("get all handles")
-                means3D_all, means3D, opacities, scales, rotations, features_dc, features_rest = batched_screenspace_pkg["param_handles"]
-                send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
-                send2gpu_filter_cpu = batched_screenspace_pkg["send2gpu_filter_cpu"]
-                timers.stop("get all handles")
-
-                timers.start("zero init grads")
-                gaussians._xyz.grad = torch.zeros_like(gaussians._xyz)
-                gaussians._opacity.grad = torch.zeros_like(gaussians._opacity)
-                gaussians._scaling.grad = torch.zeros_like(gaussians._scaling)
-                gaussians._rotation.grad = torch.zeros_like(gaussians._rotation)
-                gaussians._features_dc.grad = torch.zeros_like(gaussians._features_dc)
-                gaussians._features_rest.grad = torch.zeros_like(gaussians._features_rest)
-                timers.stop("zero init grads")
-                
-                timers.start("transfer grads to cpu")
-                gaussians._xyz.grad[send2gpu_filter_cpu] = means3D.grad.cpu()
-                gaussians._opacity.grad[send2gpu_filter_cpu] = opacities.grad.cpu()
-                gaussians._scaling.grad[send2gpu_filter_cpu] = scales.grad.cpu()
-                gaussians._rotation.grad[send2gpu_filter_cpu] = rotations.grad.cpu()
-                gaussians._features_dc.grad[send2gpu_filter_cpu] = features_dc.grad.cpu()
-                gaussians._features_rest.grad[send2gpu_filter_cpu] = features_rest.grad.cpu()
-                timers.stop("transfer grads to cpu")
-
-            timers.stop("sync_grad_to_cpu")
-            # utils.memory_report("after syncing grad to cpu")
-
         with torch.no_grad():
+            # Sync grad with cpu.
+            if args.offload:
+                timers.start("sync_grad_to_cpu")
+                if args.mxw_debug == 'fused':                    
+                    timers.start("get all handles")
+                    means3D_all, means3D, opacities, scales, rotations, features_dc, features_rest = batched_screenspace_pkg["param_handles"]
+                    send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
+                    timers.stop("get all handles")
+                    
+                    timers.start("zero out grads")
+                    N = gaussians._xyz.shape[0]
+                    means3D_grad_buffer[:N, :].zero_()
+                    opacities_grad_buffer[:N, :].zero_()
+                    scales_grad_buffer[:N, :].zero_()
+                    rotations_grad_buffer[:N, :].zero_()
+                    features_dc_grad_buffer[:N, :, :].zero_()
+                    features_rest_grad_buffer[:N, :, :].zero_()
+                    timers.stop("zero out grads")
+                    
+                    timers.start("fused grad transfer")
+                    send2cpu(
+                        means3D.grad,
+                        opacities.grad,
+                        scales.grad,
+                        rotations.grad,
+                        features_dc.grad,
+                        features_rest.grad,
+                        send2gpu_filter,
+                        means3D_grad_buffer[:N, :],
+                        opacities_grad_buffer[:N, :],
+                        scales_grad_buffer[:N, :],
+                        rotations_grad_buffer[:N, :],
+                        features_dc_grad_buffer[:N, :, :],
+                        features_rest_grad_buffer[:N, :, :]
+                    ) # This kernel blocks the cpu.
+                    timers.stop("fused grad transfer")
+                    
+                    # Free grads on gpu
+                    means3D.grad = None
+                    opacities.grad = None
+                    scales.grad = None
+                    rotations.grad = None
+                    features_dc.grad = None
+                    features_rest.grad = None
+                    
+                    timers.start("load from buffer")
+                    gaussians._xyz.grad = means3D_grad_buffer[:N, :]
+                    gaussians._opacity.grad = opacities_grad_buffer[:N, :]
+                    gaussians._scaling.grad = scales_grad_buffer[:N, :]
+                    gaussians._rotation.grad = rotations_grad_buffer[:N, :]
+                    gaussians._features_dc.grad = features_dc_grad_buffer[:N, :, :]
+                    gaussians._features_rest.grad = features_rest_grad_buffer[:N, :, :]
+                    timers.stop("load from buffer") 
+                elif args.mxw_debug == 'cat':
+                    timers.start("get all handles")
+                    means3D_all, means3D, opacities, scales, rotations, features_dc, features_rest = batched_screenspace_pkg["param_handles"]
+                    send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
+                    timers.stop("get all handles")
+                    
+                    timers.start("zero out grads")
+                    N = gaussians._xyz.shape[0]
+                    parameters_grad_buffer[:N, :].zero_()
+                    timers.stop("zero out grads")
+                    
+                    timers.start("fused grad transfer")
+                    send2cpu_cat_buffer(
+                        means3D.grad,
+                        opacities.grad,
+                        scales.grad,
+                        rotations.grad,
+                        features_dc.grad,
+                        features_rest.grad,
+                        send2gpu_filter,
+                        gaussians.param_dims,
+                        gaussians.param_dims_presum_rshift,
+                        gaussians.col2attr,
+                        parameters_grad_buffer[:N, :],
+                    ) # This kernel blocks the cpu.
+                    timers.stop("fused grad transfer")
+                    
+                    # Free grads on gpu
+                    means3D.grad = None
+                    opacities.grad = None
+                    scales.grad = None
+                    rotations.grad = None
+                    features_dc.grad = None
+                    features_rest.grad = None
+                    
+                    del means3D, opacities, scales, rotations, features_dc, features_rest
+                    
+                    timers.start("load from buffer")
+                    gaussians._parameters.grad = parameters_grad_buffer[:N, :]
+                    timers.stop("load from buffer") 
+                else:
+                    timers.start("get all handles")
+                    means3D_all, means3D, opacities, scales, rotations, features_dc, features_rest = batched_screenspace_pkg["param_handles"]
+                    send2gpu_filter = batched_screenspace_pkg["send2gpu_filter"]
+                    send2gpu_filter_cpu = batched_screenspace_pkg["send2gpu_filter_cpu"]
+                    timers.stop("get all handles")
+
+                    timers.start("zero init grads")
+                    gaussians._xyz.grad = torch.zeros_like(gaussians._xyz)
+                    gaussians._opacity.grad = torch.zeros_like(gaussians._opacity)
+                    gaussians._scaling.grad = torch.zeros_like(gaussians._scaling)
+                    gaussians._rotation.grad = torch.zeros_like(gaussians._rotation)
+                    gaussians._features_dc.grad = torch.zeros_like(gaussians._features_dc)
+                    gaussians._features_rest.grad = torch.zeros_like(gaussians._features_rest)
+                    timers.stop("zero init grads")
+                    
+                    timers.start("transfer grads to cpu")
+                    gaussians._xyz.grad[send2gpu_filter_cpu] = means3D.grad.cpu()
+                    gaussians._opacity.grad[send2gpu_filter_cpu] = opacities.grad.cpu()
+                    gaussians._scaling.grad[send2gpu_filter_cpu] = scales.grad.cpu()
+                    gaussians._rotation.grad[send2gpu_filter_cpu] = rotations.grad.cpu()
+                    gaussians._features_dc.grad[send2gpu_filter_cpu] = features_dc.grad.cpu()
+                    gaussians._features_rest.grad[send2gpu_filter_cpu] = features_rest.grad.cpu()
+                    timers.stop("transfer grads to cpu")
+
+                timers.stop("sync_grad_to_cpu")
+                # utils.memory_report("after syncing grad to cpu")
+            
             # Adjust workload division strategy.
             globally_sync_for_timer()
             timers.start("finish_strategy_final")
@@ -391,6 +410,8 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             )
             log_file.write(log_string)
             timers.stop("sync_loss_and_log")
+            
+            del batched_losses # fix memory leak
 
             # Evaluation
             end2end_timers.stop()
@@ -513,6 +534,13 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             nvtx.range_pop()
         if utils.check_enable_python_timer():
             timers.printTimers(iteration, mode="sum")
+        if args.trace_cuda_mem:
+            if (iteration % args.log_interval) == 1 or (iteration % args.densification_interval) == 0:
+                torch.cuda.memory._snapshot()
+                dump_name = args.model_path + f"/trace_dump/iter={iteration}"
+                torch.cuda.memory._dump_snapshot(filename=dump_name)
+                torch.cuda.memory._record_memory_history(enabled=None)
+            
         utils.memory_report("at the end of the iteration")
         log_file.flush()
 

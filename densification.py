@@ -141,6 +141,8 @@ def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg, o
             ), "stop_update_param must be false for densification; because it is a flag for debugging."
             # utils.print_rank_0("iteration: {}, bsz: {}, update_interval: {}, update_residual: {}".format(iteration, args.bsz, args.densification_interval, 0))
 
+            gaussians.optimizer.zero_grad(set_to_none=True) # free old tensors' grads before densification
+
             timers.start("densify_and_prune")
             size_threshold = 20 if iteration > args.opacity_reset_interval else None
             gaussians.densify_and_prune(

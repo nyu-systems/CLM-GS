@@ -318,6 +318,15 @@ class GaussianModel:
                     "name": "parameters"
                 }
             ]
+            column_sizes = [3, 1, 3, 4, 3, 45]
+            # total_columns = sum(column_sizes)
+            column_lrs = [
+                training_args.position_lr_init * self.spatial_lr_scale * args.lr_scale_pos_and_scale,
+                training_args.opacity_lr,
+                training_args.scaling_lr * args.lr_scale_pos_and_scale,
+                training_args.rotation_lr,
+                training_args.feature_lr,
+                training_args.feature_lr / 20.0]
         else:
             l = [
                 {
@@ -355,17 +364,33 @@ class GaussianModel:
             ]
 
         if utils.get_args().adam_type == "cpu_adam":
-            self.optimizer = cpu_adam.CPUAdam(
-                l,
-                lr=0.0,
-                bias_correction=True,# this is required
-                betas=(0.9, 0.999),# use adam default betas
-                eps=1e-15,# use the value below to match with when using torch adam
-                weight_decay=0,# use adam default weight decay
-                amsgrad=False,
-                adamw_mode=False,
-                fp32_optimizer_states=True,
-            )
+            if self.device == 'cpu' and self.mxw_debug == 'cat':
+                self.optimizer = cpu_adam.FusedCPUAdam(
+                    l,
+                    columns_sizes=column_sizes,
+                    columns_lr=column_lrs,
+                    lr=0.0,
+                    bias_correction=True, # This True is required. 
+                    # betas=(0.9, 0.999),
+                    betas=(0.9, 0.999),
+                    eps=1e-15,
+                    weight_decay=0,
+                    amsgrad=False,
+                    adamw_mode=False,
+                    fp32_optimizer_states=True
+                )
+            else:
+                self.optimizer = cpu_adam.CPUAdam(
+                    l,
+                    lr=0.0,
+                    bias_correction=True,# this is required
+                    betas=(0.9, 0.999),# use adam default betas
+                    eps=1e-15,# use the value below to match with when using torch adam
+                    weight_decay=0,# use adam default weight decay
+                    amsgrad=False,
+                    adamw_mode=False,
+                    fp32_optimizer_states=True,
+                )
         elif utils.get_args().adam_type == "default_adam":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         else:
@@ -477,17 +502,25 @@ class GaussianModel:
     def update_learning_rate(self, iteration):
         """Learning rate scheduling per step"""
         for param_group in self.optimizer.param_groups:
-            if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
-                param_group["lr"] = lr
-                return lr
+            if self.device == 'cpu' and self.mxw_debug == 'cat':
+                if param_group["name"] == "parameters":
+                    lr = self.xyz_scheduler_args(iteration)
+                    param_group["lr"] = lr
+                    return lr
+            else:
+                if param_group["name"] == "xyz":
+                    lr = self.xyz_scheduler_args(iteration)
+                    param_group["lr"] = lr
+                    return lr
 
     def construct_list_of_attributes(self):
         l = ["x", "y", "z", "nx", "ny", "nz"]
         # All channels except the 3 DC
-        for i in range(self._features_dc.shape[1] * self._features_dc.shape[2]):
+        features_dc_elems = self._features_dc.shape[1] * self._features_dc.shape[2] if len(self._features_dc.shape) == 3 else self._features_dc.shape[1]
+        features_rest_elems = self._features_rest.shape[1] * self._features_rest.shape[2] if len(self._features_rest.shape) == 3 else self._features_rest.shape[1]
+        for i in range(features_dc_elems):
             l.append("f_dc_{}".format(i))
-        for i in range(self._features_rest.shape[1] * self._features_rest.shape[2]):
+        for i in range(features_rest_elems):
             l.append("f_rest_{}".format(i))
         l.append("opacity")
         for i in range(self._scaling.shape[1]):
@@ -595,6 +628,8 @@ class GaussianModel:
         normals = np.zeros_like(xyz)
         f_dc = (
             _features_dc.detach()
+            .contiguous()
+            .view(-1, 1, 3)
             .transpose(1, 2)
             .flatten(start_dim=1)
             .contiguous()
@@ -603,6 +638,8 @@ class GaussianModel:
         )
         f_rest = (
             _features_rest.detach()
+            .contiguous()
+            .view(-1, 15, 3)
             .transpose(1, 2)
             .flatten(start_dim=1)
             .contiguous()
@@ -638,8 +675,14 @@ class GaussianModel:
         opacities_new = inverse_sigmoid(
             torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
         )
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
-        self._opacity = optimizable_tensors["opacity"]
+        if self.device == 'cpu' and self.mxw_debug == 'cat':
+            parameters_new = self._parameters
+            parameters_new[:, 3:4] = opacities_new
+            optimizable_tensors = self.replace_tensor_to_optimizer(parameters_new, "parameters")
+            self._parameters = optimizable_tensors["parameters"]
+        else:
+            optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+            self._opacity = optimizable_tensors["opacity"]
 
     def prune_based_on_opacity(self, min_opacity):
         prune_mask = (self.get_opacity < min_opacity).squeeze()
@@ -861,7 +904,7 @@ class GaussianModel:
                     stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
 
                 del self.optimizer.state[group["params"][0]]
-                if self.device == 'cpu' and self.mxw_debug == 'fused':
+                if self.device == 'cpu' and (self.mxw_debug == 'fused' or self.mxw_debug == 'cat'):
                     group["params"][0] = nn.Parameter(tensor.pin_memory().requires_grad_(True))
                 else:
                     group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
@@ -919,7 +962,7 @@ class GaussianModel:
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
         
-        if self.mxw_debug == 'cat':
+        if self.device == 'cpu' and self.mxw_debug == 'cat':
             self._parameters = optimizable_tensors["parameters"]
             dims = [self._xyz.shape[1], self._opacity.shape[1], self._scaling.shape[1], self._rotation.shape[1], self._features_dc.shape[1], self._features_rest.shape[1]]           
             self._xyz, self._opacity, self._scaling, self._rotation, self._features_dc, self._features_rest = torch.split(self._parameters, dims, dim=1)
@@ -1032,7 +1075,7 @@ class GaussianModel:
         new_send_to_gpui_cnt,
         new_parameters=None,
     ):
-        if self.mxw_debug == 'cat':
+        if self.device == 'cpu' and self.mxw_debug == 'cat':
             d = {
                 "parameters": new_parameters,
             }
@@ -1100,7 +1143,7 @@ class GaussianModel:
         utils.get_log_file().write(
             "Number of split gaussians: {}\n".format(selected_pts_mask.sum().item())
         )
-        if self.mxw_debug == 'cat':
+        if self.device == 'cpu' and self.mxw_debug == 'cat':
             rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
             new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[
                 selected_pts_mask
@@ -1169,7 +1212,7 @@ class GaussianModel:
         utils.get_log_file().write(
             "Number of cloned gaussians: {}\n".format(selected_pts_mask.sum().item())
         )
-        if self.mxw_debug == 'cat':
+        if self.device == 'cpu' and self.mxw_debug == 'cat':
             new_parameters = self._parameters[selected_pts_mask]
             new_send_to_gpui_cnt = self.send_to_gpui_cnt[selected_pts_mask]
             

@@ -186,6 +186,7 @@ class BenchmarkParams(ParamGroup):
         self.check_gpu_memory = False  # check gpu memory usage.
         self.check_cpu_memory = False  # check cpu memory usage.
         self.log_memory_summary = False
+        self.trace_cuda_mem = False
 
         super().__init__(parser, "Benchmark Parameters")
 
@@ -194,6 +195,7 @@ class DebugParams(ParamGroup):
     def __init__(self, parser):
         self.zhx_debug = False  # log debug information that zhx needs.
         self.mxw_debug = ""
+        self.mem_debug = ""
         self.stop_update_param = (
             False  # stop updating parameters. No optimizer.step() will be called.
         )

@@ -1115,7 +1115,7 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
         log_file = utils.get_log_file()
         if (iteration % args.log_interval) == 1:
             log_file.write(
-                "<<< # iteration: {} filtered gaussians this iter = {}/{} (%{:.2f}) >>>\n".format(iteration, N, means3D_all.shape[0], (100 * N / means3D_all.shape[0]))
+                "<<< # iteration: {}, filtered gaussians this iter = {}/{} ({:.2f}%) >>>\n".format(iteration, N, means3D_all.shape[0], (100 * N / means3D_all.shape[0]))
             )
             
         if args.mxw_debug == 'seperate':
@@ -1217,23 +1217,7 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
             _features_rest = _features_rest.view(-1, _features_rest_dim1, _features_rest_dim2)
             if timers is not None:
                 timers.stop("Unpack parameters")
-        elif args.mxw_debug == 'cat':
-            if timers is not None:
-                timers.start("Transfer parameters")
-            _opacities, _scales, _rotations, _features_dc, _features_rest = send_cat2gpu(
-                pc._parameters.detach(),
-                send2gpu_filter,
-                pc.param_dims,
-                pc.param_dims_presum_rshift,
-                pc.col2attr
-            )
-            #TODO: fix feautures shape
-            _features_dc = _features_dc.view(-1, 1, 3)
-            _features_rest = _features_rest.view(-1, 15, 3)
-            if timers is not None:
-                timers.stop("Transfer parameters")
-        else:
-        # elif args.mxw_debug == 'fused':
+        elif args.mxw_debug == 'fused':
             if timers is not None:
                 timers.start("Transfer parameters")
             _opacities, _scales, _rotations, _features_dc, _features_rest = send2gpu(
@@ -1246,6 +1230,21 @@ def gsplat_distributed_preprocess3dgs_and_all2all_final(
             )
             if timers is not None:
                 timers.stop("Transfer parameters")
+        else:
+        # elif args.mxw_debug == 'cat':
+            if timers is not None:
+                timers.start("Transfer parameters")
+            _opacities, _scales, _rotations, _features_dc, _features_rest = send_cat2gpu(
+                pc._parameters.detach(),
+                send2gpu_filter,
+                pc.param_dims,
+                pc.param_dims_presum_rshift,
+                pc.col2attr
+            )
+            _features_dc = _features_dc.view(-1, 1, 3)
+            _features_rest = _features_rest.view(-1, 15, 3)
+            if timers is not None:
+                timers.stop("Transfer parameters")              
             
         if timers is not None:
             timers.start("Requires_grad params")
@@ -1565,6 +1564,14 @@ def gsplat_render_final(batched_screenspace_pkg, batched_strategies, tile_size=1
         isect_offsets = isect_offset_encode(
             isect_ids, B, tile_width, tile_height
         )  # (B, tile_height, tile_width)
+        
+        args = utils.get_args()
+        iteration = utils.get_cur_iter()
+        log_file = utils.get_log_file()
+        if (iteration % args.log_interval) == 1:
+            log_file.write(
+                "<<< # iteration: {}, # intersections = {} >>>\n".format(iteration, isect_ids.shape[0])
+            )
 
         # TODO: One way to do load balancing: Add two timer operators before and after `rasterize_to_pixels`
         # record_time_start : torch operator(torch.autograd.func)

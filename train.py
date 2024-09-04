@@ -62,6 +62,10 @@ if __name__ == "__main__":
         with open(args.log_folder + "/args.json", "w") as f:
             json.dump(vars(args), f)
 
+    # create cuda trace dump folder
+    if args.trace_cuda_mem:
+        os.makedirs(args.model_path + "/trace_dump")
+
     # Initialize system state (RNG)
     safe_state(args.quiet)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
