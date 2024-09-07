@@ -676,10 +676,9 @@ class GaussianModel:
             torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.01)
         )
         if self.device == 'cpu' and self.mxw_debug == 'cat':
-            parameters_new = self._parameters
-            parameters_new[:, 3:4] = opacities_new
-            optimizable_tensors = self.replace_tensor_to_optimizer(parameters_new, "parameters")
-            self._parameters = optimizable_tensors["parameters"]
+            self._parameters[:, 3:4] = opacities_new
+            self.cat_replace_opacities_to_optimizer(opacities_new, "parameters")
+            self._opacity = self._parameters[:, 3:4]
         else:
             optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
             self._opacity = optimizable_tensors["opacity"]
@@ -892,25 +891,48 @@ class GaussianModel:
         else:
             self.distributed_load_ply(path)
 
+    def cat_replace_opacities_to_optimizer(self, opacities_new, name):
+        for group in self.optimizer.param_groups:
+            if group["name"] == name:
+                stored_state = self.optimizer.state.get(group["params"][0], None)
+                if stored_state is not None:
+                    if "exp_avg" not in stored_state:
+                        stored_state["momentum_buffer"][:, 3:4].zero_()
+                    else:
+                        stored_state["exp_avg"][:, 3:4].zero_()
+                        stored_state["exp_avg_sq"][:, 3:4].zero_()
+                    
+                    self.optimizer.state[group["params"][0]] = stored_state
+                    
+    
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group["params"][0], None)
-                if "exp_avg" not in stored_state:
-                    stored_state["momentum_buffer"] = torch.zeros_like(tensor)
-                else:
-                    stored_state["exp_avg"] = torch.zeros_like(tensor)
-                    stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                if stored_state is not None:
+                    if "exp_avg" not in stored_state:
+                        stored_state["momentum_buffer"] = torch.zeros_like(tensor)
+                    else:
+                        stored_state["exp_avg"] = torch.zeros_like(tensor)
+                        stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                    
+                    del self.optimizer.state[group["params"][0]]
+                    
+                    if self.device == 'cpu' and (self.mxw_debug == 'fused' or self.mxw_debug == 'cat'):
+                        group["params"][0] = nn.Parameter(tensor.pin_memory().requires_grad_(True))
+                    else:
+                        group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
+                    self.optimizer.state[group["params"][0]] = stored_state
 
-                del self.optimizer.state[group["params"][0]]
-                if self.device == 'cpu' and (self.mxw_debug == 'fused' or self.mxw_debug == 'cat'):
-                    group["params"][0] = nn.Parameter(tensor.pin_memory().requires_grad_(True))
+                    optimizable_tensors[group["name"]] = group["params"][0]
                 else:
-                    group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group["params"][0]] = stored_state
+                    if self.device == 'cpu' and (self.mxw_debug == 'fused' or self.mxw_debug == 'cat'):
+                        group["params"][0] = nn.Parameter(tensor.pin_memory().requires_grad_(True))
+                    else:
+                        group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
 
-                optimizable_tensors[group["name"]] = group["params"][0]
+                    optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
     def _prune_optimizer(self, mask):
@@ -1048,7 +1070,7 @@ class GaussianModel:
 
                 optimizable_tensors[group["name"]] = group["params"][0]
             else:
-                if self.device == 'cpu' and self.mxw_debug == 'fused':
+                if self.device == 'cpu' and (self.mxw_debug == 'fused' or self.mxw_debug == 'cat'):
                     group["params"][0] = nn.Parameter(
                         torch.cat(
                             (group["params"][0], extension_tensor), dim=0
