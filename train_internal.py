@@ -70,16 +70,28 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     # Init dataset
     if args.torch_dataloader:
         train_dataset = TorchSceneDataset(scene.getTrainCamerasInfo())
-        dataloader = DataLoader(
+        if args.num_workers == 0:
+            dataloader = DataLoader(
             train_dataset,
             batch_size=args.bsz,
-            # num_workers=1,
             shuffle=True,
             drop_last=True,
-            # persistent_workers=True,
             pin_memory=True,
             collate_fn=custom_collate_fn
         )
+        elif args.num_workers > 0:
+            dataloader = DataLoader(
+            train_dataset,
+            batch_size=args.bsz,
+            num_workers=args.num_workers,
+            shuffle=True,
+            drop_last=True,
+            persistent_workers=True,
+            pin_memory=True,
+            collate_fn=custom_collate_fn
+        )
+        else:
+            assert False, "`num_workers` should be a positive number"
         dataloader_iter = iter(dataloader)
     else:
         train_dataset = SceneDataset(scene.getTrainCameras())
@@ -159,6 +171,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         # utils.gaussian_report(gaussians)
         # utils.memory_report("at the beginning of an iteration")
         timers.clear()
+        timers.start("[iteration end2end]")
         if args.nsys_profile:
             assert args.bsz == 1, "nsys profiling only supports batch size 1"
             if iteration == args.nsys_profile_start_iter:
@@ -942,6 +955,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             if iteration >= args.nsys_profile_start_iter and iteration < args.nsys_profile_end_iter:
                 nvtx.range_pop()
         if utils.check_enable_python_timer():
+            timers.stop("[iteration end2end]")
             timers.printTimers(iteration, mode="sum")
         if args.trace_cuda_mem:
             if (iteration % args.log_interval) == 1 or (iteration % args.densification_interval) == 0:

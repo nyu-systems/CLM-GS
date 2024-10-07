@@ -80,7 +80,7 @@ class AuxiliaryParams(ParamGroup):
         self.fused_loss = "torch_compile" # "default", "hand_written", "torch_compile", "advanced_fuse"s
         self.accumulate_grads = False
         self.torch_dataloader = False
-        self.num_workers = 1
+        self.num_workers = 0
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
