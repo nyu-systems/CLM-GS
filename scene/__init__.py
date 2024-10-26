@@ -17,7 +17,7 @@ from torch.utils.data import Dataset
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
-from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON, loadCam, predecode_dataset_to_disk, clean_up_disk, loadCam_gt_from_disk
+from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON, loadCam, predecode_dataset_to_disk, clean_up_disk, loadCam_raw_from_disk
 import utils.general_utils as utils
 
 
@@ -35,6 +35,8 @@ class Scene:
         self.loaded_iter = None
         self.gaussians = gaussians
         self.args = args
+        self.train_cameras_info = None
+        self.test_cameras_info = None
         log_file = utils.get_log_file()
 
         if load_iteration:
@@ -100,14 +102,26 @@ class Scene:
         )
         utils.set_img_size(orig_h, orig_w)
         # Dataset size in GB
-        dataset_size_in_GB = (
-            1.0
-            * (len(scene_info.train_cameras) + len(scene_info.test_cameras))
-            * orig_w
-            * orig_h
-            * 3
-            / 1e9
-        )
+        if (args.num_train_cameras > 0):
+            assert args.num_test_cameras > 0, "Should set both `num_train_cameras` and `num_test_cameras`"
+            assert args.num_train_cameras <= len(scene_info.train_cameras) and args.num_test_cameras <= len(scene_info.test_cameras), "Can not config more cameras than dataset size"
+            dataset_size_in_GB = (
+                1.0
+                * (args.num_train_cameras + args.num_test_cameras)
+                * orig_w
+                * orig_h
+                * 3
+                / 1e9
+            )
+        else:
+            dataset_size_in_GB = (
+                1.0
+                * (len(scene_info.train_cameras) + len(scene_info.test_cameras))
+                * orig_w
+                * orig_h
+                * 3
+                / 1e9
+            )
         log_file.write(f"Dataset size: {dataset_size_in_GB} GB\n")
         
         # Preprocess dataset
@@ -142,6 +156,7 @@ class Scene:
             else:
                 train_cameras = scene_info.train_cameras
             predecode_dataset_to_disk(train_cameras, args)
+            self.train_cameras_info = train_cameras
             
             if len(train_cameras) > 0:
                 log_file.write(
@@ -158,6 +173,8 @@ class Scene:
                 else:
                     test_cameras = scene_info.test_cameras
                 predecode_dataset_to_disk(test_cameras, args)
+                self.test_cameras_info = test_cameras
+                
                 if len(test_cameras) > 0:
                     log_file.write(
                         "Test Image size: {}x{}\n".format(
@@ -176,6 +193,7 @@ class Scene:
             else:
                 train_cameras = scene_info.train_cameras
             self.train_cameras = cameraList_from_camInfos(train_cameras, args)
+            self.train_cameras_info = train_cameras
             # output the number of cameras in the training set and image size to the log file
             log_file.write(
                 "Number of local training cameras: {}\n".format(len(self.train_cameras))
@@ -195,6 +213,8 @@ class Scene:
                 else:
                     test_cameras = scene_info.test_cameras
                 self.test_cameras = cameraList_from_camInfos(test_cameras, args)
+                self.test_cameras_info = test_cameras
+                
                 # output the number of cameras in the training set and image size to the log file
                 log_file.write(
                     "Number of local test cameras: {}\n".format(len(self.test_cameras))
@@ -216,7 +236,7 @@ class Scene:
                     self.model_path, "point_cloud", "iteration_" + str(self.loaded_iter)
                 )
             )
-        elif hasattr(args, "load_ply_path"):
+        elif args.load_ply_path != '':
             self.gaussians.load_ply(args.load_ply_path)
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
@@ -234,21 +254,13 @@ class Scene:
         return self.train_cameras
 
     def getTrainCamerasInfo(self):
-        if self.args.num_train_cameras >= 0:
-            train_cameras_info = self.scene_info.train_cameras[: self.args.num_train_cameras]
-        else:
-            train_cameras_info = self.scene_info.train_cameras
-        return train_cameras_info
+        return self.train_cameras_info
 
     def getTestCameras(self):
         return self.test_cameras
     
     def getTestCamerasInfo(self):
-        if self.args.num_test_cameras >= 0:
-            test_cameras_info = self.scene_info.test_cameras[: self.args.num_test_cameras]
-        else:
-            test_cameras_info = self.scene_info.test_cameras
-        return test_cameras_info
+        return self.test_cameras_info
 
     def log_scene_info_to_file(self, log_file, prefix_str=""):
 
@@ -261,18 +273,20 @@ class Scene:
         log_file.write("rotation shape: {}\n".format(self.gaussians._rotation.shape))
 
     def clean_up(self):
+        # Remove the predecoded dataset from disk
         if self.args.decode_dataset_to_disk:
             clean_up_disk(self.args)
             utils.print_rank_0("Cleaned up decoded dataset on disk.")
 
 class SceneDataset:
-    def __init__(self, cameras):
+    def __init__(self, cameras, cameras_info=None):
         self.cameras = cameras
-        self.camera_size = len(self.cameras)
+        self.cameras_info = cameras_info
+        self.camera_size = len(self.cameras) if self.cameras is not None else len(self.cameras_info)
         self.sample_camera_idx = []
-        for i in range(self.camera_size):
-            if self.cameras[i].original_image_backup is not None:
-                self.sample_camera_idx.append(i)
+        # for i in range(self.camera_size):
+        #     if self.cameras[i].original_image_backup is not None:
+        #         self.sample_camera_idx.append(i)
         # print("Number of cameras with sample images: ", len(self.sample_camera_idx))
 
         self.cur_epoch_cameras = []
@@ -304,15 +318,23 @@ class SceneDataset:
                 self.cur_epoch_cameras = self.sample_camera_idx.copy()
             else:
                 self.cur_epoch_cameras = list(range(self.camera_size))
+            #HACK: temporarily disable shuffling for reproductibility
             # random.shuffle(self.cur_epoch_cameras)
 
         self.cur_iteration += 1
 
-        idx = 0
-        while self.cameras[self.cur_epoch_cameras[idx]].uid in batched_cameras_uid:
-            idx += 1
-        camera_idx = self.cur_epoch_cameras.pop(idx)
-        viewpoint_cam = self.cameras[camera_idx]
+        if args.decode_dataset_to_disk:
+            idx = 0
+            while self.cur_epoch_cameras[idx] in batched_cameras_uid:
+                idx += 1
+            camera_idx = self.cur_epoch_cameras.pop(idx)
+            viewpoint_cam = loadCam_raw_from_disk(args, camera_idx, self.cameras_info[camera_idx], to_gpu=True)
+        else:
+            idx = 0
+            while self.cameras[self.cur_epoch_cameras[idx]].uid in batched_cameras_uid:
+                idx += 1
+            camera_idx = self.cur_epoch_cameras.pop(idx)
+            viewpoint_cam = self.cameras[camera_idx]
         return camera_idx, viewpoint_cam
 
     def get_batched_cameras(self, batch_size):
@@ -362,9 +384,10 @@ def custom_collate_fn(batch):
     return batch
 
 class TorchSceneDataset(Dataset):
-    def __init__(self, cameras_info):
-        self.cameras = cameras_info # `cameras` now contains only info, no image
-        self.camera_size = len(self.cameras)
+    def __init__(self, cameras, cameras_info):
+        self.cameras = cameras
+        self.cameras_info = cameras_info
+        self.camera_size = len(self.cameras) if self.cameras is not None else len(self.cameras_info)
         self.sample_camera_idx = []
         # for i in range(self.camera_size):
         #     if self.cameras[i].original_image_backup is not None:
@@ -389,16 +412,16 @@ class TorchSceneDataset(Dataset):
 
     def __getitem__(self, id):
         if (self.args.decode_dataset_to_disk):
-            return loadCam_gt_from_disk(
+            return loadCam_raw_from_disk(
                 self.args,
                 id,
-                self.cameras[id],
+                self.cameras_info[id],
             )
         else:
             return loadCam(
                 self.args,
                 id, #TODO: arg `id` in `loadCam()` is supposed to be the index inside a batch, not the global index in dataset. Passing `id` is meaningless.
-                self.cameras[id],
+                self.cameras_info[id],
                 decompressed_image=None,
                 return_image=False,
             )

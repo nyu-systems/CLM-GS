@@ -809,7 +809,7 @@ class DivisionStrategyHistoryFinal:
         self.rank = rank
         self.accum_heuristic = {}
         #TODO: fix the temporary workaround
-        for idx, camera in enumerate(dataset.cameras):
+        for idx, camera in enumerate(dataset.cameras if dataset.cameras is not None else dataset.cameras_info):
             self.accum_heuristic[idx] = torch.ones(
                 (utils.TILE_Y,), dtype=torch.float32, device="cuda", requires_grad=False
             )

@@ -105,6 +105,13 @@ class GaussianModel:
             opt_dict,
             self.spatial_lr_scale,
         ) = model_args
+        if self._features_rest.dim == 3:
+            self._features_rest = self._features_rest.view(self._features_rest.shape[0], -1)
+        if self.device == 'cpu' and self.mxw_debug == 'cat':
+            self._parameters = torch.cat(
+                (self._xyz, self._opacity, self._scaling, self._rotation, self._features_dc, self._features_rest),
+                dim=1
+            ).pin_memory()
         self.training_setup(training_args)
         self.xyz_gradient_accum = (
             xyz_gradient_accum  # TODO: deal with self.send_to_gpui_cnt
@@ -738,39 +745,74 @@ class GaussianModel:
         catted_opacity = np.concatenate(catted_opacity, axis=0)
         catted_scaling = np.concatenate(catted_scaling, axis=0)
         catted_rotation = np.concatenate(catted_rotation, axis=0)
-
-        self._xyz = nn.Parameter(
-            torch.tensor(catted_xyz, dtype=torch.float, device=self.device).requires_grad_(
-                True
+        
+        if (self.device == 'cpu' and self.mxw_debug == 'cat'):
+            N = catted_xyz.shape[0]
+            if catted_features_dc.ndim == 3:
+                catted_features_dc = np.transpose(catted_features_dc, (0, 2, 1)).reshape(N, -1)
+            if catted_features_rest.ndim == 3:
+                catted_features_rest = np.transpose(catted_features_rest, (0, 2, 1)).reshape(N, -1)
+            
+            catted_parameters = np.concatenate((catted_xyz, catted_opacity, catted_scaling, catted_rotation, catted_features_dc, catted_features_rest), axis=1)
+            self._parameters = nn.Parameter(
+                torch.tensor(catted_parameters, dtype=torch.float, device=self.device).pin_memory().requires_grad_(True)
             )
-        )
-        self._features_dc = nn.Parameter(
-            torch.tensor(catted_features_dc, dtype=torch.float, device=self.device)
-            .transpose(1, 2)
-            .contiguous()
-            .requires_grad_(True)
-        )
-        self._features_rest = nn.Parameter(
-            torch.tensor(catted_features_rest, dtype=torch.float, device=self.device)
-            .transpose(1, 2)
-            .contiguous()
-            .requires_grad_(True)
-        )
-        self._opacity = nn.Parameter(
-            torch.tensor(
-                catted_opacity, dtype=torch.float, device=self.device
-            ).requires_grad_(True)
-        )
-        self._scaling = nn.Parameter(
-            torch.tensor(
-                catted_scaling, dtype=torch.float, device=self.device
-            ).requires_grad_(True)
-        )
-        self._rotation = nn.Parameter(
-            torch.tensor(
-                catted_rotation, dtype=torch.float, device=self.device
-            ).requires_grad_(True)
-        )
+            dims = [catted_xyz.shape[1], catted_opacity.shape[1], catted_scaling.shape[1], catted_rotation.shape[1], catted_features_dc.shape[1], catted_features_rest.shape[1]]
+            self._xyz, self._opacity, self._scaling, self._rotation, self._features_dc, self._features_rest = torch.split(self._parameters, dims, dim=1)
+            self.param_dims = torch.tensor(dims, dtype=torch.int, device='cuda')
+            self.param_dims_presum_rshift = torch.cumsum(self.param_dims, dtype=torch.int, dim=0) - self.param_dims
+            self.col2attr = torch.empty((sum(dims),), dtype=torch.int, device='cuda')
+            for i in range(sum(dims)):
+                if i < self.param_dims_presum_rshift[1]:
+                    self.col2attr[i] = 0
+                elif i < self.param_dims_presum_rshift[2]:
+                    self.col2attr[i] = 1
+                elif i < self.param_dims_presum_rshift[3]:
+                    self.col2attr[i] = 2
+                elif i < self.param_dims_presum_rshift[4]:
+                    self.col2attr[i] = 3
+                elif i < self.param_dims_presum_rshift[5]:
+                    self.col2attr[i] = 4
+                else:
+                    self.col2attr[i] = 5
+            
+            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.device)
+            self.sum_visible_count_in_one_batch = torch.zeros(
+                (self.get_xyz.shape[0]), device=self.device
+            ) # TODO: Check where this param is used. If it's used for gpu, should stil init it there.
+        else:
+            self._xyz = nn.Parameter(
+                torch.tensor(catted_xyz, dtype=torch.float, device=self.device).requires_grad_(
+                    True
+                )
+            )
+            self._features_dc = nn.Parameter(
+                torch.tensor(catted_features_dc, dtype=torch.float, device=self.device)
+                .transpose(1, 2)
+                .contiguous()
+                .requires_grad_(True)
+            )
+            self._features_rest = nn.Parameter(
+                torch.tensor(catted_features_rest, dtype=torch.float, device=self.device)
+                .transpose(1, 2)
+                .contiguous()
+                .requires_grad_(True)
+            )
+            self._opacity = nn.Parameter(
+                torch.tensor(
+                    catted_opacity, dtype=torch.float, device=self.device
+                ).requires_grad_(True)
+            )
+            self._scaling = nn.Parameter(
+                torch.tensor(
+                    catted_scaling, dtype=torch.float, device=self.device
+                ).requires_grad_(True)
+            )
+            self._rotation = nn.Parameter(
+                torch.tensor(
+                    catted_rotation, dtype=torch.float, device=self.device
+                ).requires_grad_(True)
+            )
 
         self.active_sh_degree = self.max_sh_degree
 

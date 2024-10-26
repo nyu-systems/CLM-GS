@@ -73,6 +73,7 @@ class AuxiliaryParams(ParamGroup):
         self.auto_start_checkpoint = False
         self.log_folder = "/tmp/gaussian_splatting"
         self.log_interval = 250
+        self.load_ply_path = ""
         self.llffhold = 8
         self.backend = "default" # "default", "gsplat"
         self.offload = False
@@ -83,9 +84,10 @@ class AuxiliaryParams(ParamGroup):
         self.decode_dataset_to_disk = False
         self.decode_dataset_path = "/tmp"
         self.num_workers = 0
+        self.sharing_strategy = "default" # "default" ("file_descriptor"), or "file_system" [see https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies]
         super().__init__(parser, "Loading Parameters", sentinel)
 
-    def extract(self, args):
+    def extract(self, args): 
         g = super().extract(args)
         return g
 
@@ -214,6 +216,8 @@ class DebugParams(ParamGroup):
         self.nsys_profile_end_iter = 1000000 # profile with nsys end iteration.
         self.drop_initial_3dgs_p = 0.0  # profile with nsys.
         self.drop_duplicate_gaussians_coeff = 1.0
+        self.do_not_save = False # Do not save model
+        self.reset_each_iter = False # Reset max memory for  each iteration
 
         super().__init__(parser, "Debug Parameters")
 

@@ -293,9 +293,11 @@ def check_initial_gpu_memory_usage(prefix):
         log_file.write(
             "check_gpu_memory["
             + prefix
-            + "]: Memory usage: {} GB. Max Memory usage: {} GB.\n".format(
+            + "]: Memory usage: {} GB. Max Memory usage: {} GB. Now reserved memory: {} GB. Max reserved memory: {} GB\n".format(
                 torch.cuda.memory_allocated() / 1024 / 1024 / 1024,
                 torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024,
+                torch.cuda.memory_reserved() / 1024 / 1024 / 1024,
+                torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024,
             )
         )
 
@@ -328,9 +330,11 @@ def memory_report(prefix):
                 psutil.virtual_memory().available / 1024 / 1024 / 1024,
                 psutil.virtual_memory().total / 1024 / 1024 / 1024,
             )
-            + " -> [GPU] Memory usage: {} GB. Max Memory usage: {} GB.\n".format(
+            + " -> [GPU] Memory usage: {} GB. Max Memory usage: {} GB. Now reserved memory: {} GB. Max reserved memory: {} GB\n".format(
                 torch.cuda.memory_allocated() / 1024 / 1024 / 1024,
                 torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024,
+                torch.cuda.memory_reserved() / 1024 / 1024 / 1024,
+                torch.cuda.max_memory_reserved() / 1024 / 1024 / 1024,
             )
         )  
         
@@ -548,14 +552,14 @@ def log_cpu_memory_usage(position_str):
     )
 
 
-def merge_multiple_checkpoints(checkpoint_files):
+def merge_multiple_checkpoints(args, checkpoint_files):
     global LOCAL_RANK
 
     all_model_params = []
     start_from_this_iteration = 0
     for checkpoint_file in checkpoint_files:
         (model_params, start_from_this_iteration) = torch.load(
-            checkpoint_file, map_location=f"cuda:{LOCAL_RANK}"
+            checkpoint_file, map_location=(torch.device('cpu') if args.offload else f"cuda:{LOCAL_RANK}")
         )
         all_model_params.append(model_params)
 
@@ -682,7 +686,7 @@ def drop_duplicate_gaussians(model_params, drop_duplicate_gaussians_coeff):
 def load_checkpoint(args):
     # TODO: merge these loading functions into a single one.
 
-    global DEFAULT_GROUP
+    global DEFAULT_GROUP, LOCAL_RANK
 
     number_files = len(os.listdir(args.start_checkpoint))
     if args.start_checkpoint[-1] != "/":
@@ -697,7 +701,7 @@ def load_checkpoint(args):
             + str(DEFAULT_GROUP.rank())
             + ".pth"
         )
-        (model_params, start_from_this_iteration) = torch.load(file_name)
+        (model_params, start_from_this_iteration) = torch.load(file_name, map_location=(torch.device('cpu') if args.offload else f"cuda:{LOCAL_RANK}"))
 
     elif number_files > DEFAULT_GROUP.size():
         assert (
@@ -714,6 +718,7 @@ def load_checkpoint(args):
                 + ".pth"
             )
         (model_params, start_from_this_iteration) = merge_multiple_checkpoints(
+            args,
             local_processed_file_names
         ) # TODO: Check this: it loads params to gpu.
         file_name = local_processed_file_names

@@ -33,6 +33,7 @@ from diff_gaussian_rasterization import (
     send2cpu_cat_buffer,
     send2cpu_cat_buffer_osr_shs,
 )
+import torch.multiprocessing
 
 def training(dataset_args, opt_args, pipe_args, args, log_file):
 
@@ -43,13 +44,15 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     prepare_output_and_logger(dataset_args)
     utils.log_cpu_memory_usage("at the beginning of training")
     start_from_this_iteration = 1
+    if args.sharing_strategy is not "default":
+        torch.multiprocessing.set_sharing_strategy(args.sharing_strategy)
 
     # Init parameterized scene
     gaussians = GaussianModel(sh_degree=dataset_args.sh_degree, offload=args.offload, mxw_debug=args.mxw_debug)
 
     with torch.no_grad():
         if args.torch_dataloader:
-            scene = Scene(args, gaussians, shuffle=True)
+            scene = Scene(args, gaussians, shuffle=False) #HACK: temporarily disable shuffling for reproductability
         else:
             scene = Scene(args, gaussians)
         gaussians.training_setup(opt_args)
@@ -69,7 +72,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
 
     # Init dataset
     if args.torch_dataloader:
-        train_dataset = TorchSceneDataset(scene.getTrainCamerasInfo())
+        train_dataset = TorchSceneDataset(scene.getTrainCameras(), scene.getTrainCamerasInfo())
         if args.num_workers == 0:
             dataloader = DataLoader(
                 train_dataset,
@@ -94,9 +97,9 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             assert False, "`num_workers` should be a positive number"
         dataloader_iter = iter(dataloader)
     else:
-        train_dataset = SceneDataset(scene.getTrainCameras())
+        train_dataset = SceneDataset(scene.getTrainCameras(), scene.getTrainCamerasInfo())
     if args.adjust_strategy_warmp_iterations == -1:
-        args.adjust_strategy_warmp_iterations = len(train_dataset.cameras)
+        args.adjust_strategy_warmp_iterations = train_dataset.camera_size
         # use one epoch to warm up. do not use the first epoch's running time for adjustment of strategy.
 
     # Init distribution strategy history
@@ -170,6 +173,13 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         num_trained_batches += 1
         # utils.gaussian_report(gaussians)
         # utils.memory_report("at the beginning of an iteration")
+        
+        # Reset max memory tracking stats
+        if args.reset_each_iter:
+            torch.cuda.reset_max_memory_cached()
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.reset_max_memory_allocated()
+        
         timers.clear()
         timers.start("[iteration end2end]")
         if args.nsys_profile:
@@ -866,7 +876,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             # utils.memory_report("after freeing activation states and before saving gaussians")
 
             # Save Gaussians
-            if any(
+            if not args.do_not_save and any(
                 [
                     iteration <= save_iteration < iteration + args.bsz
                     for save_iteration in args.save_iterations
@@ -959,7 +969,6 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             timers.printTimers(iteration, mode="sum")
         if args.trace_cuda_mem:
             if (iteration % args.log_interval) == 1 or (iteration % args.densification_interval) == 0:
-                torch.cuda.memory._snapshot()
                 dump_name = args.model_path + f"/trace_dump/iter={iteration}"
                 torch.cuda.memory._dump_snapshot(filename=dump_name)
                 torch.cuda.memory._record_memory_history(enabled=None)
@@ -1001,13 +1010,13 @@ def training_report(
                 "name": "test", 
                 "cameras": scene.getTestCameras(), 
                 "cameras_info": scene.getTestCamerasInfo(),
-                "num_cameras": len(scene.getTestCamerasInfo()),
+                "num_cameras": len(scene.getTestCameras() if scene.getTestCameras() is not None else scene.getTestCamerasInfo()),
             },
             {
                 "name": "train",
                 "cameras": scene.getTrainCameras(),
                 "cameras_info": scene.getTrainCamerasInfo(),
-                "num_cameras": max(len(scene.getTrainCamerasInfo()) // args.llffhold, args.bsz),
+                "num_cameras": max(len(scene.getTrainCameras() if scene.getTrainCameras() is not None else scene.getTrainCamerasInfo()) // args.llffhold, args.bsz),
             },
         )
 
@@ -1141,7 +1150,7 @@ def training_report(
 
                 # TODO: if not divisible by world size
                 num_cameras = config["num_cameras"] // args.bsz * args.bsz
-                eval_dataset = TorchSceneDataset(config["cameras_info"])
+                eval_dataset = TorchSceneDataset(config["cameras"], config["cameras_info"])
                 strategy_history = DivisionStrategyHistoryFinal(
                     eval_dataset, utils.DEFAULT_GROUP.size(), utils.DEFAULT_GROUP.rank()
                 )
