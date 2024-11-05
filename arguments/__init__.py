@@ -78,13 +78,14 @@ class AuxiliaryParams(ParamGroup):
         self.backend = "default" # "default", "gsplat"
         self.offload = False
         self.prealloc_capacity = 5_000_000
-        self.fused_loss = "torch_compile" # "default", "hand_written", "torch_compile", "advanced_fuse"s
+        self.fused_loss = "advanced_fuse" # "default", "hand_written", "torch_compile", "advanced_fuse"s
         self.accumulate_grads = False
         self.torch_dataloader = False
         self.decode_dataset_to_disk = False
         self.decode_dataset_path = "/tmp"
         self.num_workers = 0
         self.sharing_strategy = "default" # "default" ("file_descriptor"), or "file_system" [see https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies]
+        self.gpu_cache = "no_cache"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args): 

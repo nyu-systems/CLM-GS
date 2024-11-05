@@ -19,7 +19,8 @@ from diff_gaussian_rasterization import (
     send_cat2gpu,
     send_cat2gpu_xyz,
     send_cat2gpu_osr,
-    send_cat2gpu_shs
+    send_cat2gpu_shs,
+    send_shs2gpu_shs,
     # get_exact_send2gpu_filter,
     # send_cat2gpu_buffer
 )
@@ -1044,6 +1045,206 @@ def distributed_preprocess3dgs_and_all2all_final(
     }
     return batched_screenspace_pkg
 
+def gsplat_distributed_preprocess3dgs_and_all2all_offloaded_cacheXYZOSR(
+    batched_viewpoint_cameras,
+    pc: GaussianModel,
+    pipe,
+    bg_color: torch.Tensor,
+    scaling_modifier=1.0,
+    batched_strategies=None,
+    mode="train",
+    offload=False,
+    means3D_all=None,
+    prev_filter=None,
+    prev_filter_cpu=None,
+):
+    """
+    Render the scene.
+
+    Cache xyz, osr of all gaussians on GPU. Only update shs on CPU.
+    """
+    timers = utils.get_timers()
+    args = utils.get_args()
+
+    ########## [START] Prepare Gaussians for rendering ##########
+    if timers is not None:
+        timers.start("forward_prepare_gaussians")
+    
+    param_handles = []
+    send2gpu_filter = None  
+    send2gpu_filter_cpu = None
+    
+    viewmatrix = batched_viewpoint_cameras[0].world_view_transform
+    projmatrix = batched_viewpoint_cameras[0].full_proj_transform
+    
+    if timers is not None:
+        timers.start("Activate params: means3D, opacities, scales, rotations")
+    means3D = pc.get_xyz
+    opacities = pc.get_opacity
+    scales = pc.get_scaling * scaling_modifier
+    rotations = pc.get_rotation
+    if timers is not None:
+        timers.stop("Activate params: means3D, opacities, scales, rotations")
+        
+    if timers is not None:
+        timers.stop("forward_prepare_gaussians")
+    utils.check_initial_gpu_memory_usage("after forward_prepare_gaussians")
+    ########## [END] Prepare Gaussians for rendering ##########
+    
+    
+    ########## [START] Preprocess Gaussians: fully fused projection & spherical harmonics ##########
+    if timers is not None:
+        timers.start("forward_preprocess_gaussians")
+    batched_cuda_args = []
+    batched_screenspace_params = []
+
+    N = means3D.shape[0]  # number of gaussians
+    B = len(batched_viewpoint_cameras)  # number of cameras (aka batch size)
+
+    Ks = []
+    viewmats = []
+
+    for viewpoint_camera, strategy in zip(
+        batched_viewpoint_cameras, batched_strategies
+    ):
+        cuda_args = get_cuda_args_final(strategy, mode)
+        batched_cuda_args.append(cuda_args)
+
+        # Set up rasterization configuration
+        tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+        tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+        focal_length_x = viewpoint_camera.image_width / (2 * tanfovx)
+        focal_length_y = viewpoint_camera.image_height / (2 * tanfovy)
+        K = torch.tensor(
+            [
+                [focal_length_x, 0, viewpoint_camera.image_width / 2.0],
+                [0, focal_length_y, viewpoint_camera.image_height / 2.0],
+                [0, 0, 1],
+            ],
+            device="cuda",
+        )
+        viewmat = viewpoint_camera.world_view_transform.transpose(0, 1)  # why transpose
+        Ks.append(K)
+        viewmats.append(viewmat)
+
+    batched_Ks = torch.stack(Ks)  # (B, 3, 3)
+    batched_viewmats = torch.stack(viewmats)  # (B, 4, 4)
+    image_width = int(batched_viewpoint_cameras[0].image_width)
+    image_height = int(batched_viewpoint_cameras[0].image_height)
+
+    # Project Gaussians to 2D. Directly pass in {quats, scales} is faster than precomputing covars.
+    batched_radiis, batched_means2D, batched_depths, batched_conics, _ = (
+        fully_fused_projection(
+            means=means3D,
+            covars=None,
+            quats=rotations,
+            scales=scales,
+            viewmats=batched_viewmats,
+            Ks=batched_Ks,
+            width=image_width,
+            height=image_height,
+            packed=False,
+        )
+    ) # (B, N), (B, N, 2), (B, N), (B, N, 3), (B, N)
+    
+    # Select visible gaussians after projection.
+    infrustum_radii_opacities_filter = (batched_radiis[0, :] > 0) & (opacities[:, 0] > 1.0 / 255.0) # (N, )
+    infrustum_radii_opacities_filter_indices = torch.nonzero(infrustum_radii_opacities_filter).squeeze(1) # (n_select, )
+    send2gpu_final_filter_indices = infrustum_radii_opacities_filter_indices
+    
+    iteration = utils.get_cur_iter()
+    log_file = utils.get_log_file()
+    if (iteration % args.log_interval) == 1:
+        log_file.write(
+            "<<< # iteration: {}, send2gpu_final_filter = {}/{} ({:.2f}%)>>>\n".format(
+                iteration,
+                send2gpu_final_filter_indices.shape[0],
+                N,
+                (100 * send2gpu_final_filter_indices.shape[0] / N)
+            )
+        )
+    
+    if timers is not None:
+        timers.start("slicing infrustum_radii_opacities_filter_indices")
+    n_selectecd = infrustum_radii_opacities_filter_indices.shape[0]
+    batched_radiis = torch.gather(batched_radiis, # (1, N)
+                                    1, infrustum_radii_opacities_filter_indices.reshape(1, n_selectecd))
+    batched_means2D = torch.gather(batched_means2D,  # (1, N, 2)
+                                    1, infrustum_radii_opacities_filter_indices.reshape(1, n_selectecd, 1).expand(1, n_selectecd, 2))
+    batched_depths = torch.gather(batched_depths,  # (1, N)
+                                    1, infrustum_radii_opacities_filter_indices.reshape(1, n_selectecd))
+    batched_conics = torch.gather(batched_conics,  # (1, N, 3)
+                                    1, infrustum_radii_opacities_filter_indices.reshape(1, n_selectecd, 1).expand(1, n_selectecd, 3))
+    opacities = torch.gather(opacities,  # (N, 1)
+                            0, infrustum_radii_opacities_filter_indices.reshape(n_selectecd, 1))
+    batched_opacities = opacities.squeeze(1).unsqueeze(0) # (N, 1) -> (1, N)
+    if timers is not None:
+        timers.stop("slicing infrustum_radii_opacities_filter_indices")
+    
+    if mode == "train":
+        batched_means2D.retain_grad()
+    
+    if timers is not None:
+        timers.start("send shs to gpu")
+    shs = send_shs2gpu_shs(
+        pc._parameters.detach(),
+        send2gpu_final_filter_indices,
+    ) # (N, 48)
+    shs = shs.requires_grad_(True)
+    sh_degree = pc.active_sh_degree
+    if timers is not None:
+        timers.stop("send shs to gpu")
+
+    if timers is not None:
+        timers.start("Append handles")
+    # param_handles.append(means3D_all) # (N, 3)
+    # param_handles.append(means3D)  # (len(infrustum_filter_indices), 3)
+    # param_handles.append(_opacities)  # (len(infrustum_filter_indices), 1)
+    # param_handles.append(_scales) # (len(infrustum_filter_indices), 3)
+    # param_handles.append(_rotations) # (len(infrustum_filter_indices), 4)
+    param_handles.append(shs) # (len(infrustum_radii_opacities_filter_indices), 16, 3)
+    if timers is not None:
+        timers.stop("Append handles")
+    
+    send2gpu_filter = (infrustum_radii_opacities_filter_indices, send2gpu_final_filter_indices)
+    send2gpu_filter_cpu = None
+
+    camtoworlds = torch.inverse(batched_viewmats)
+    dirs = means3D[None, infrustum_radii_opacities_filter_indices, :] - camtoworlds[:, None, :3, 3]
+    shs = shs.reshape(1, n_selectecd, 16, 3)
+    batched_colors = spherical_harmonics(
+        degrees_to_use=sh_degree, dirs=dirs, coeffs=shs
+    )
+    batched_colors = torch.clamp_min(batched_colors + 0.5, 0.0)  # (B, N, 3)
+    
+    if timers is not None:
+        timers.stop("forward_preprocess_gaussians")
+    ########## [END] Preprocess Gaussians: fully fused projection & spherical harmonics ##########
+
+    batched_screenspace_pkg = {
+        "image_height": image_height,
+        "image_width": image_width,
+        "backgrounds": bg_color,  # default: None
+        "batched_locally_preprocessed_mean2D": batched_means2D,
+        "batched_locally_preprocessed_visibility_filter": (batched_radiis > 0),
+        "batched_locally_preprocessed_radii": batched_radiis,
+        "batched_cuda_args": batched_cuda_args,
+        "batched_means2D_redistributed": batched_means2D,
+        "batched_colors_redistributed": batched_colors,
+        "batched_conics_redistributed": batched_conics,  # Inverse of the projected covariances. Flattened upper triangle with (B, N, 3).
+        "batched_opacities_redistributed": batched_opacities,
+        "batched_radiis_redistributed": batched_radiis,
+        "batched_depths_redistributed": batched_depths,
+        "gpui_to_gpuj_imgk_size": [
+            [[batched_means2D[i].shape[0] for i in range(B)]]
+        ],
+        "param_handles": param_handles,
+        "send2gpu_filter": send2gpu_filter,
+        "send2gpu_filter_cpu": send2gpu_filter_cpu,
+    }
+
+    return batched_screenspace_pkg
+    
 
 def gsplat_distributed_preprocess3dgs_and_all2all_final(
     batched_viewpoint_cameras,

@@ -49,7 +49,10 @@ class GaussianModel:
 
         self.rotation_activation = torch.nn.functional.normalize
 
-    def __init__(self, sh_degree: int, offload: bool, mxw_debug):
+    def __init__(self, sh_degree: int):
+        args = utils.get_args()
+        self.args = args
+        
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
         self._parameters = torch.empty(0)
@@ -71,10 +74,11 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
-        self.device = "cpu" if offload else "cuda"
-        self.mxw_debug = mxw_debug
+        self.device = "cpu" if args.offload else "cuda"
+        self.mxw_debug = args.mxw_debug
 
     def capture(self):
+        assert false, "optimizer not fixed yet"
         return (
             self.active_sh_degree,
             self._xyz,
@@ -91,6 +95,7 @@ class GaussianModel:
         )
 
     def restore(self, model_args, training_args):
+        assert False, "optimizer not fixed yet"
         (
             self.active_sh_degree,
             self._xyz,
@@ -158,14 +163,14 @@ class GaussianModel:
         self.spatial_lr_scale = spatial_lr_scale
 
         fused_point_cloud = (
-            torch.tensor(np.asarray(pcd.points)).float().to(self.device)
+            torch.tensor(np.asarray(pcd.points)).float().to("cuda")
         )  # It is not contiguous
         fused_point_cloud = fused_point_cloud.contiguous()  # Now it's contiguous
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().to(self.device))
+        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().to("cuda"))
         features = (
             torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2))
             .float()
-            .to(self.device)
+            .to("cuda")
         )
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
@@ -179,14 +184,14 @@ class GaussianModel:
             distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
             0.0000001,
         )
-        scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3).to(self.device)
-        rots = torch.zeros((fused_point_cloud.shape[0], 4), device=self.device)
+        scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3).to("cuda")
+        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
         opacities = inverse_sigmoid(
             0.1
             * torch.ones(
-                (fused_point_cloud.shape[0], 1), dtype=torch.float, device=self.device
+                (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
             )
         )
 
@@ -230,35 +235,51 @@ class GaussianModel:
                 )
             )
             # print("rank", utils.GLOBAL_RANK, "Number of initialized points after random drop : ", fused_point_cloud.shape[0])
+        
+        # Init parameters
+        self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
+        self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
+        self._scaling = nn.Parameter(scales.requires_grad_(True))
+        self._rotation = nn.Parameter(rots.requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.sum_visible_count_in_one_batch = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+    
+    def create_from_pcd_offloaded(self, pcd: BasicPointCloud, spatial_lr_scale: float):
+        log_file = utils.get_log_file()
+        self.spatial_lr_scale = spatial_lr_scale
+        
+        if self.args.gpu_cache == "no_cache":
+            fused_point_cloud = (torch.tensor(np.asarray(pcd.points)).float().to("cpu"))  # It is not contiguous
+            fused_point_cloud = fused_point_cloud.contiguous()  # Now it's contiguous
+            fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().to("cpu"))
+            features = (torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().to("cpu"))
+            features[:, :3, 0] = fused_color
+            features[:, 3:, 1:] = 0.0
 
-        if self.device == 'cpu' and self.mxw_debug == 'fused':
-            # init parameters in pinned memory
-            self._xyz = nn.Parameter(fused_point_cloud.pin_memory().requires_grad_(True))
-            self._features_dc = nn.Parameter(
-                features[:, :, 0:1].transpose(1, 2).contiguous().pin_memory().requires_grad_(True)
+            print("Number of points before initialization : ", fused_point_cloud.shape[0])
+
+            dist2 = torch.clamp_min(
+                distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
+                0.0000001,
             )
-            self._features_rest = nn.Parameter(
-                features[:, :, 1:].transpose(1, 2).contiguous().pin_memory().requires_grad_(True)
-            )
-            self._scaling = nn.Parameter(scales.pin_memory().requires_grad_(True))
-            self._rotation = nn.Parameter(rots.pin_memory().requires_grad_(True))
-            self._opacity = nn.Parameter(opacities.pin_memory().requires_grad_(True))
-            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.device)
-            self.sum_visible_count_in_one_batch = torch.zeros(
-                (self.get_xyz.shape[0]), device=self.device
-            ) # TODO: Check where this param is used. If it's used for gpu, should stil init it there.
-        elif self.device == 'cpu' and self.mxw_debug == 'cat':
+            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3).to("cpu")
+            rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cpu")
+            rots[:, 0] = 1
+
+            opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cpu"))
+            
             features_dc = features[:, :, 0:1].transpose(1, 2).contiguous().view(fused_point_cloud.shape[0], -1) # (N, 1, 3) -> (N, 3)
             features_rest = features[:, :, 1:].transpose(1, 2).contiguous().view(fused_point_cloud.shape[0], -1) # (N, 15, 3) -> (N, 45)
             dims = [fused_point_cloud.shape[1], opacities.shape[1], scales.shape[1], rots.shape[1], features_dc.shape[1], features_rest.shape[1]]
             parameters = torch.empty((fused_point_cloud.shape[0], sum(dims)), pin_memory=True)          
             torch.cat((fused_point_cloud, opacities, scales, rots, features_dc, features_rest), dim=1, out=parameters)
+            
             self._parameters = nn.Parameter(parameters.requires_grad_(True))
             self._xyz, self._opacity, self._scaling, self._rotation, self._features_dc, self._features_rest = torch.split(self._parameters, dims, dim=1) 
-            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.device)
-            self.sum_visible_count_in_one_batch = torch.zeros(
-                (self.get_xyz.shape[0]), device=self.device
-            ) # TODO: Check where this param is used. If it's used for gpu, should stil init it there.
+            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cpu")
+            self.sum_visible_count_in_one_batch = torch.zeros((self.get_xyz.shape[0]), device="cpu")
             
             self.param_dims = torch.tensor(dims, dtype=torch.int, device='cuda')
             self.param_dims_presum_rshift = torch.cumsum(self.param_dims, dtype=torch.int, dim=0) - self.param_dims
@@ -276,25 +297,69 @@ class GaussianModel:
                     self.col2attr[i] = 4
                 else:
                     self.col2attr[i] = 5
-        else:
+        
+        elif self.args.gpu_cache == "xyzosr":
+            fused_point_cloud = (torch.tensor(np.asarray(pcd.points)).float().to("cuda"))  # It is not contiguous
+            fused_point_cloud = fused_point_cloud.contiguous()  # Now it's contiguous
+            fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().to("cpu"))
+            features = (torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().to("cpu"))
+            features[:, :3, 0] = fused_color
+            features[:, 3:, 1:] = 0.0
+
+            print("Number of points before initialization : ", fused_point_cloud.shape[0])
+
+            dist2 = torch.clamp_min(
+                distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
+                0.0000001,
+            )
+            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3).to("cuda")
+            rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+            rots[:, 0] = 1
+
+            opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
+            
             self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
-            self._features_dc = nn.Parameter(
-                features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True)
-            )
-            self._features_rest = nn.Parameter(
-                features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True)
-            )
             self._scaling = nn.Parameter(scales.requires_grad_(True))
             self._rotation = nn.Parameter(rots.requires_grad_(True))
             self._opacity = nn.Parameter(opacities.requires_grad_(True))
-            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=self.device)
-            self.sum_visible_count_in_one_batch = torch.zeros(
-                (self.get_xyz.shape[0]), device=self.device
-            ) # TODO: Check where this param is used. If it's used for gpu, should stil init it there.
+            
+            features_dc = features[:, :, 0:1].transpose(1, 2).contiguous().view(fused_point_cloud.shape[0], -1) # (N, 1, 3) -> (N, 3)
+            features_rest = features[:, :, 1:].transpose(1, 2).contiguous().view(fused_point_cloud.shape[0], -1) # (N, 15, 3) -> (N, 45)
+            dims = [features_dc.shape[1], features_rest.shape[1]]
+            parameters = torch.empty((fused_point_cloud.shape[0], sum(dims)), pin_memory=True)
+            torch.cat((features_dc, features_rest), dim=1, out=parameters)
+            
+            self._parameters = nn.Parameter(parameters.requires_grad_(True))
+            self._features_dc, self._features_rest = torch.split(self._parameters, dims, dim=1) 
+            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cpu")
+            self.sum_visible_count_in_one_batch = torch.zeros((self.get_xyz.shape[0]), device="cpu")
+            
+            self.param_dims = torch.tensor(dims, dtype=torch.int, device='cuda')
+            # self.param_dims_presum_rshift = torch.cumsum(self.param_dims, dtype=torch.int, dim=0) - self.param_dims
+            # self.col2attr = torch.empty((sum(dims),), dtype=torch.int, device='cuda')
+            # for i in range(sum(dims)):
+            #     if i < self.param_dims_presum_rshift[1]:
+            #         self.col2attr[i] = 0 # features_dc
+            #     else:
+            #         self.col2attr[i] = 1 # features_rest
+        
+        else:
+            raise Exception("Gpu cache strategy undefined")
 
     def all_parameters(self):
-        if self.device == 'cpu' and self.mxw_debug == 'cat':
-            return [self._parameters]
+        if self.args.offload:
+            if self.args.gpu_cache == "no_cache":
+                return [self._parameters]
+            elif self.args.gpu_cache == "xyzosr":
+                return [
+                    self._xyz,
+                    self._opacity,
+                    self._scaling,
+                    self._rotation,
+                    self._parameters,
+                ]
+            else:
+                raise Exception("Gpu cache strategy undefined")
         else:
             return [
                 self._xyz,
@@ -308,7 +373,7 @@ class GaussianModel:
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device=self.device)
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=self.device)
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=self.device) 
 
         shard_world_size = self.group_for_redistribution().size()
         self.send_to_gpui_cnt = torch.zeros(
@@ -318,25 +383,47 @@ class GaussianModel:
         args = utils.get_args()
         log_file = utils.get_log_file()
         
-        if self.device == 'cpu' and self.mxw_debug == 'cat':
-            l = [
-                {
-                    "params": [self._parameters],
-                    "lr": training_args.position_lr_init
-                    * self.spatial_lr_scale
-                    * args.lr_scale_pos_and_scale,
-                    "name": "parameters"
-                }
-            ]
-            column_sizes = [3, 1, 3, 4, 3, 45]
-            # total_columns = sum(column_sizes)
-            column_lrs = [
-                training_args.position_lr_init * self.spatial_lr_scale * args.lr_scale_pos_and_scale,
-                training_args.opacity_lr,
-                training_args.scaling_lr * args.lr_scale_pos_and_scale,
-                training_args.rotation_lr,
-                training_args.feature_lr,
-                training_args.feature_lr / 20.0]
+        if args.offload:
+            if args.gpu_cache == "no_cache":
+                l = [
+                    {
+                        "params": [self._parameters],
+                        "lr": training_args.position_lr_init
+                        * self.spatial_lr_scale
+                        * args.lr_scale_pos_and_scale,
+                        "name": "parameters"
+                    }
+                ]
+                column_sizes = [3, 1, 3, 4, 3, 45]
+                # total_columns = sum(column_sizes)
+                column_lrs = [
+                    training_args.position_lr_init * self.spatial_lr_scale * args.lr_scale_pos_and_scale,
+                    training_args.opacity_lr,
+                    training_args.scaling_lr * args.lr_scale_pos_and_scale,
+                    training_args.rotation_lr,
+                    training_args.feature_lr,
+                    training_args.feature_lr / 20.0]
+            elif args.gpu_cache == "xyzosr":
+                l = [
+                    {
+                        "params": [self._parameters],
+                        "lr": training_args.position_lr_init
+                        * self.spatial_lr_scale
+                        * args.lr_scale_pos_and_scale,
+                        "name": "parameters"
+                    }
+                ]
+                column_sizes = [3, 1, 3, 4, 3, 45]
+                # total_columns = sum(column_sizes)
+                column_lrs = [
+                    training_args.position_lr_init * self.spatial_lr_scale * args.lr_scale_pos_and_scale,
+                    training_args.opacity_lr,
+                    training_args.scaling_lr * args.lr_scale_pos_and_scale,
+                    training_args.rotation_lr,
+                    training_args.feature_lr,
+                    training_args.feature_lr / 20.0]
+            else:
+                raise ValueError("Invalid gpu cache strategy.")
         else:
             l = [
                 {

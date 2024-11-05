@@ -239,7 +239,10 @@ class Scene:
         elif args.load_ply_path != '':
             self.gaussians.load_ply(args.load_ply_path)
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            if args.offload:
+                self.gaussians.create_from_pcd_offloaded(scene_info.point_cloud, self.cameras_extent)
+            else:
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
         utils.check_initial_gpu_memory_usage("after initializing point cloud")
         utils.log_cpu_memory_usage("after loading initial 3dgs points")
