@@ -187,27 +187,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             gaussians.oneupSHdegree()
 
         # Prepare data: Pick random Cameras for training
-        if args.local_sampling:
-            assert (
-                args.bsz % utils.WORLD_SIZE == 0
-            ), "Batch size should be divisible by the number of GPUs."
-            batched_cameras_idx = train_dataset.get_batched_cameras_idx(
-                args.bsz // utils.WORLD_SIZE
-            )
-            batched_all_cameras_idx = torch.zeros(
-                (utils.WORLD_SIZE, len(batched_cameras_idx)), device="cuda", dtype=int
-            )
-            batched_cameras_idx = torch.tensor(
-                batched_cameras_idx, device="cuda", dtype=int
-            )
-            torch.distributed.all_gather_into_tensor(
-                batched_all_cameras_idx, batched_cameras_idx, group=utils.DEFAULT_GROUP
-            )
-            batched_all_cameras_idx = batched_all_cameras_idx.cpu().numpy().squeeze()
-            batched_cameras = train_dataset.get_batched_cameras_from_idx(
-                batched_all_cameras_idx
-            )
-        elif args.torch_dataloader:
+        if args.torch_dataloader:
             timers.start("dataloader: load the next image from disk and decode")
             try:
                 batched_cameras = next(dataloader_iter)
@@ -770,34 +750,9 @@ def training_report(
                 )
                 for idx in range(1, num_cameras + 1, args.bsz):
                     num_camera_to_load = min(args.bsz, num_cameras - idx + 1)
-                    if args.local_sampling:
-                        # TODO: if not divisible by world size
-                        batched_cameras_idx = eval_dataset.get_batched_cameras_idx(
-                            args.bsz // utils.WORLD_SIZE
-                        )
-                        batched_all_cameras_idx = torch.zeros(
-                            (utils.WORLD_SIZE, len(batched_cameras_idx)),
-                            device="cuda",
-                            dtype=int,
-                        )
-                        batched_cameras_idx = torch.tensor(
-                            batched_cameras_idx, device="cuda", dtype=int
-                        )
-                        torch.distributed.all_gather_into_tensor(
-                            batched_all_cameras_idx,
-                            batched_cameras_idx,
-                            group=utils.DEFAULT_GROUP,
-                        )
-                        batched_all_cameras_idx = (
-                            batched_all_cameras_idx.cpu().numpy().squeeze()
-                        )
-                        batched_cameras = eval_dataset.get_batched_cameras_from_idx(
-                            batched_all_cameras_idx
-                        )
-                    else:
-                        batched_cameras = eval_dataset.get_batched_cameras(
-                            num_camera_to_load
-                        )
+                    batched_cameras = eval_dataset.get_batched_cameras(
+                        num_camera_to_load
+                    )
                     batched_strategies, gpuid2tasks = start_strategy_final(
                         batched_cameras, strategy_history
                     )
@@ -810,37 +765,85 @@ def training_report(
                         camera.world_view_transform = camera.world_view_transform.cuda()
                         camera.full_proj_transform = camera.full_proj_transform.cuda()
                         
-                        if backend == "gsplat":
-                            batched_screenspace_pkg = (
-                                gsplat_distributed_preprocess3dgs_and_all2all_final(
-                                    [camera],
-                                    scene.gaussians,
-                                    pipe_args,
-                                    background,
-                                    batched_strategies=[strategy],
-                                    mode="test",
-                                    offload=offload,
+                        if args.offload:
+                            if args.gpu_cache == "xyzosr":
+                                batched_screenspace_pkg = (
+                                    gsplat_distributed_preprocess3dgs_and_all2all_offloaded_cacheXYZOSR(
+                                        [camera],
+                                        scene.gaussians,
+                                        pipe_args,
+                                        background,
+                                        batched_strategies=[strategy],
+                                        mode="test",
+                                        offload=args.offload,
+                                    )
                                 )
-                            )
-                            images, _ = gsplat_render_final(
-                                batched_screenspace_pkg, [strategy]
-                            )
-                            batched_image.append(images[0])
+                                images, _ = gsplat_render_final(
+                                    batched_screenspace_pkg, [strategy]
+                                )
+                                
+                                batched_image.append(images[0])
+                                del batched_screenspace_pkg         
+                            
+                            elif args.gpu_cache == "no_cache":
+                                batched_screenspace_pkg = (
+                                    gsplat_distributed_preprocess3dgs_and_all2all_final(
+                                        [camera],
+                                        scene.gaussians,
+                                        pipe_args,
+                                        background,
+                                        batched_strategies=[strategy],
+                                        mode="test",
+                                        offload=args.offload,
+                                    )
+                                )
+                                images, _ = gsplat_render_final(
+                                    batched_screenspace_pkg, [strategy]
+                                )
+                                
+                                batched_image.append(images[0])
+                                del batched_screenspace_pkg
+                            
+                            else:
+                                raise Exception("Invalid gpu cache strategy.")
+                            
                         else:
-                            batched_screenspace_pkg = (
-                                distributed_preprocess3dgs_and_all2all_final(
-                                    [camera],
-                                    scene.gaussians,
-                                    pipe_args,
-                                    background,
-                                    batched_strategies=[strategy],
-                                    mode="test",
+                            if args.backend == "gsplat":
+                                batched_screenspace_pkg = (
+                                    gsplat_distributed_preprocess3dgs_and_all2all_final(
+                                        [camera],
+                                        scene.gaussians,
+                                        pipe_args,
+                                        background,
+                                        batched_strategies=[strategy],
+                                        mode="test",
+                                        offload=False,
+                                    )
                                 )
-                            )
-                            images, _ = render_final(
-                                batched_screenspace_pkg, [strategy]
-                            )
-                            batched_image.append(images[0])
+                                images, _ = gsplat_render_final(
+                                    batched_screenspace_pkg, [strategy]
+                                )
+                                
+                                batched_image.append(images[0])
+                                del batched_screenspace_pkg
+                            else:
+                                batched_screenspace_pkg = (
+                                    distributed_preprocess3dgs_and_all2all_final(
+                                        [camera],
+                                        scene.gaussians,
+                                        pipe_args,
+                                        background,
+                                        batched_strategies=[strategy],
+                                        mode="test",
+                                    )
+                                )
+                                images, _ = render_final(
+                                    batched_screenspace_pkg, [strategy]
+                                )
+                                
+                                batched_image.append(images[0])
+                                del batched_screenspace_pkg
+                        
                     for camera_id, (image, gt_camera) in enumerate(
                         zip(batched_image, batched_cameras)
                     ):
@@ -851,11 +854,6 @@ def training_report(
                                 gt_camera.original_image.shape,
                                 device="cuda",
                                 dtype=torch.float32,
-                            )
-
-                        if utils.DEFAULT_GROUP.size() > 1:
-                            torch.distributed.all_reduce(
-                                image, op=dist.ReduceOp.SUM, group=utils.DEFAULT_GROUP
                             )
 
                         image = torch.clamp(image, 0.0, 1.0)

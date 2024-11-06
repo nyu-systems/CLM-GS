@@ -23,6 +23,7 @@ from utils.general_utils import strip_symmetric, build_scaling_rotation
 import utils.general_utils as utils
 import torch.distributed as dist
 import cpu_adam
+from optimizer import UnifiedAdam
 
 lr_scale_fns = {
     "linear": lambda x: x,
@@ -383,6 +384,7 @@ class GaussianModel:
         args = utils.get_args()
         log_file = utils.get_log_file()
         
+        # Setup the optimizer
         if args.offload:
             if args.gpu_cache == "no_cache":
                 l = [
@@ -403,27 +405,73 @@ class GaussianModel:
                     training_args.rotation_lr,
                     training_args.feature_lr,
                     training_args.feature_lr / 20.0]
+                
+                self.optimizer = cpu_adam.FusedCPUAdam(
+                    l,
+                    columns_sizes=column_sizes,
+                    columns_lr=column_lrs,
+                    lr=0.0,
+                    bias_correction=True, # This True is required. 
+                    betas=(0.9, 0.999),
+                    eps=1e-15,
+                    weight_decay=0,
+                    amsgrad=False,
+                    adamw_mode=False,
+                    fp32_optimizer_states=True
+                )
+                
             elif args.gpu_cache == "xyzosr":
                 l = [
                     {
-                        "params": [self._parameters],
+                        "params": [self._xyz],
                         "lr": training_args.position_lr_init
                         * self.spatial_lr_scale
                         * args.lr_scale_pos_and_scale,
+                        "name": "xyz",
+                    },
+                    {
+                        "params": [self._opacity],
+                        "lr": training_args.opacity_lr,
+                        "name": "opacity",
+                    },
+                    {
+                        "params": [self._scaling],
+                        "lr": training_args.scaling_lr * args.lr_scale_pos_and_scale,
+                        "name": "scaling",
+                    },
+                    {
+                        "params": [self._rotation],
+                        "lr": training_args.rotation_lr,
+                        "name": "rotation",
+                    },
+                    {
+                        "params": [self._parameters], # concatenated shs
+                        "lr": training_args.feature_lr,
                         "name": "parameters"
-                    }
+                    },
                 ]
-                column_sizes = [3, 1, 3, 4, 3, 45]
-                # total_columns = sum(column_sizes)
+                column_sizes = [3, 45]
                 column_lrs = [
-                    training_args.position_lr_init * self.spatial_lr_scale * args.lr_scale_pos_and_scale,
-                    training_args.opacity_lr,
-                    training_args.scaling_lr * args.lr_scale_pos_and_scale,
-                    training_args.rotation_lr,
                     training_args.feature_lr,
                     training_args.feature_lr / 20.0]
+                
+                self.optimizer = UnifiedAdam(
+                    l,
+                    column_sizes,
+                    column_lrs,
+                    lr=0.0,
+                    bias_correction=True, # This True is required. 
+                    betas=(0.9, 0.999),
+                    eps=1e-15,
+                    weight_decay=0,
+                    amsgrad=False,
+                    adamw_mode=False,
+                    fp32_optimizer_states=True
+                )
+                
             else:
                 raise ValueError("Invalid gpu cache strategy.")
+            
         else:
             l = [
                 {
@@ -459,43 +507,10 @@ class GaussianModel:
                     "name": "rotation",
                 },
             ]
-
-        if utils.get_args().adam_type == "cpu_adam":
-            if self.device == 'cpu' and self.mxw_debug == 'cat':
-                self.optimizer = cpu_adam.FusedCPUAdam(
-                    l,
-                    columns_sizes=column_sizes,
-                    columns_lr=column_lrs,
-                    lr=0.0,
-                    bias_correction=True, # This True is required. 
-                    # betas=(0.9, 0.999),
-                    betas=(0.9, 0.999),
-                    eps=1e-15,
-                    weight_decay=0,
-                    amsgrad=False,
-                    adamw_mode=False,
-                    fp32_optimizer_states=True
-                )
-            else:
-                self.optimizer = cpu_adam.CPUAdam(
-                    l,
-                    lr=0.0,
-                    bias_correction=True,# this is required
-                    betas=(0.9, 0.999),# use adam default betas
-                    eps=1e-15,# use the value below to match with when using torch adam
-                    weight_decay=0,# use adam default weight decay
-                    amsgrad=False,
-                    adamw_mode=False,
-                    fp32_optimizer_states=True,
-                )
-        elif utils.get_args().adam_type == "default_adam":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        else:
-            raise ValueError("adam_type should be either 'cpu_adam' or 'default'.")
 
-        # self.optimizer = torch.optim.SGD(l, lr=0.0, momentum=0.1)
-
-        bsz = utils.get_args().bsz
+        # Scale learning rates according to bsz.
+        bsz = args.bsz
         for param_group in self.optimizer.param_groups:
             if training_args.lr_scale_mode == "linear":
                 lr_scale = bsz
@@ -520,7 +535,7 @@ class GaussianModel:
                     False
                 ), f"lr_scale_mode {training_args.lr_scale_mode} not supported."
         
-        if utils.get_args().adam_type == "cpu_adam" and self.device == 'cpu' and self.mxw_debug == 'cat':
+        if args.offload:
             if training_args.lr_scale_mode == "linear":
                 lr_scale = bsz
                 self.optimizer.columns_lr *= lr_scale
@@ -608,7 +623,8 @@ class GaussianModel:
     def update_learning_rate(self, iteration):
         """Learning rate scheduling per step"""
         for param_group in self.optimizer.param_groups:
-            if self.device == 'cpu' and self.mxw_debug == 'cat':
+            if self.args.offload and self.args.gpu_cache == "no_cache":
+                # `xyz` is concatenated in `parameters`
                 if param_group["name"] == "parameters":
                     lr = self.xyz_scheduler_args(iteration)
                     param_group["lr"] = lr
