@@ -229,7 +229,8 @@ def pipeline_offload_impl(
     batched_cameras,
     parameters_grad_buffer,
     background,
-    pipe_args
+    pipe_args,
+    comm_stream,
 ):
     args = utils.get_args()
 
@@ -255,7 +256,7 @@ def pipeline_offload_impl(
     rotation_gpu = rotation_gpu_origin.detach().requires_grad_()
 
     # declare streams for computationa and communication
-    comm_stream = torch.cuda.Stream(device=0)
+    # comm_stream = torch.cuda.Stream(device=0)
     default_stream = torch.cuda.current_stream()
 
     # start the training pipeline
@@ -506,6 +507,9 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     #     else:
     #         raise ValueError("Invalid gpu cache strategy.")
 
+    # declare stream for communication
+    comm_stream = torch.cuda.Stream(device=0)
+
     # Training Loop
     end2end_timers = End2endTimer(args)
     end2end_timers.start()
@@ -629,7 +633,8 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 batched_cameras,
                 gaussians.parameters_grad_buffer,
                 background,
-                pipe_args
+                pipe_args,
+                comm_stream
             )
             batched_screenspace_pkg = {}
 
@@ -883,7 +888,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 # utils.memory_report("after preprocessing")
                 timers.start("render_final")
                 batched_image, batched_compute_locally = gsplat_render_final(
-                    batched_screenspace_pkg, batched_strategies
+                    batched_screenspace_pkg, batched_strategies, accumulate_grads=args.accumulate_grads
                 )
                 timers.stop("render_final")
                 

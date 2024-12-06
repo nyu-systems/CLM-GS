@@ -261,9 +261,9 @@ def update_densification_stats_pipelineoffload_xyzosr(
     # Densification
     if not args.disable_auto_densification and iteration <= args.densify_until_iter:
         # Keep track of max radii in image-space for pruning
-        timers.start("densification")
+        # timers.start("densification")
 
-        timers.start("densification_update_stats")
+        # timers.start("densification_update_stats")
         gaussians.max_radii2D[send2gpu_final_filter_indices] = torch.max(
             gaussians.max_radii2D[send2gpu_final_filter_indices], radii
         )
@@ -273,9 +273,9 @@ def update_densification_stats_pipelineoffload_xyzosr(
             image_width,
             image_height,
         )           
-        timers.stop("densification_update_stats")
+        # timers.stop("densification_update_stats")
 
-        timers.stop("densification")
+        # timers.stop("densification")
     else:
         if iteration > args.densify_from_iter and utils.check_update_at_this_iter(
             iteration, args.bsz, args.densification_interval, 0
