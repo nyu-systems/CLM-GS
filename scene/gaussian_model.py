@@ -845,7 +845,7 @@ class GaussianModel:
         catted_opacity = []
         catted_scaling = []
         catted_rotation = []
-        for rk in range(world_size):
+        for rk in range(min(world_size, self.args.load_ply_max)):
             one_checkpoint_path = (
                 folder + "/point_cloud_rk" + str(rk) + "_ws" + str(world_size) + ".ply"
             )

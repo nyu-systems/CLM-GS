@@ -264,7 +264,7 @@ def pipeline_offload_impl(
     N = gaussians._xyz.shape[0]
     losses = []
     shs_grad = None
-    grid_size, block_size = 16, 256
+    grid_size, block_size = args.grid_size, 256
     for micro_idx in range(num_micro_batches):
         torch.cuda.nvtx.range_push("micro_batch_idx: " + str(micro_idx))
 
@@ -1173,7 +1173,7 @@ def training_report(
                 "name": "train",
                 "cameras": scene.getTrainCameras(),
                 "cameras_info": scene.getTrainCamerasInfo(),
-                "num_cameras": max(len(scene.getTrainCameras() if scene.getTrainCameras() is not None else scene.getTrainCamerasInfo()) // args.llffhold, args.bsz),
+                "num_cameras": max(len(scene.getTrainCameras() if scene.getTrainCameras() is not None else scene.getTrainCamerasInfo()) // args.llffhold, 1),
             },
         )
 
@@ -1184,13 +1184,13 @@ def training_report(
                 psnr_test = torch.scalar_tensor(0.0, device="cuda")
 
                 # TODO: if not divisible by world size
-                num_cameras = config["num_cameras"] // args.bsz * args.bsz
+                num_cameras = config["num_cameras"]
                 eval_dataset = SceneDataset(config["cameras"])
                 strategy_history = DivisionStrategyHistoryFinal(
                     eval_dataset, utils.DEFAULT_GROUP.size(), utils.DEFAULT_GROUP.rank()
                 )
-                for idx in range(1, num_cameras + 1, args.bsz):
-                    num_camera_to_load = min(args.bsz, num_cameras - idx + 1)
+                for idx in range(1, num_cameras + 1, 1):
+                    num_camera_to_load = min(1, num_cameras - idx + 1)
                     batched_cameras = eval_dataset.get_batched_cameras(
                         num_camera_to_load
                     )
@@ -1324,7 +1324,7 @@ def training_report(
                 psnr_test = torch.scalar_tensor(0.0, device="cuda")
 
                 # TODO: if not divisible by world size
-                num_cameras = config["num_cameras"] // args.bsz * args.bsz
+                num_cameras = config["num_cameras"]
                 eval_dataset = TorchSceneDataset(config["cameras"], config["cameras_info"])
                 strategy_history = DivisionStrategyHistoryFinal(
                     eval_dataset, utils.DEFAULT_GROUP.size(), utils.DEFAULT_GROUP.rank()
@@ -1332,16 +1332,15 @@ def training_report(
                 # Init dataloader: num_workers = 0
                 dataloader = DataLoader(
                     eval_dataset,
-                    batch_size=args.bsz,
+                    batch_size=1,
                     # shuffle=True,
-                    drop_last=True,
                     pin_memory=True,
                     collate_fn=custom_collate_fn
                 )
                 dataloader_iter = iter(dataloader)
                 
-                for idx in range(1, num_cameras + 1, args.bsz):
-                    num_camera_to_load = min(args.bsz, num_cameras - idx + 1)
+                for idx in range(1, num_cameras + 1, 1):
+                    num_camera_to_load = min(1, num_cameras - idx + 1)
                     #FIXME: may have problems when bsz > 1
                     try:
                         batched_cameras = next(dataloader_iter)

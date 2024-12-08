@@ -74,10 +74,12 @@ class AuxiliaryParams(ParamGroup):
         self.log_folder = "/tmp/gaussian_splatting"
         self.log_interval = 250
         self.load_ply_path = ""
+        self.load_ply_max = 1_000_000
         self.llffhold = 8
         self.backend = "default" # "default", "gsplat"
         self.offload = False
         self.pipelined_offload = False
+        self.grid_size = 32
         self.prealloc_capacity = 5_000_000
         self.fused_loss = "advanced_fuse" # "default", "hand_written", "torch_compile", "advanced_fuse"s
         self.accumulate_grads = False
