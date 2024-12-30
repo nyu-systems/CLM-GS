@@ -113,7 +113,7 @@ def calculate_filters(
         gaussian_ids_per_camera = torch.split(gaussian_ids, counts_cpu)
 
     filters = gaussian_ids_per_camera # on GPU
-    return filters
+    return filters, camera_ids, gaussian_ids
 
 
 def pipeline_forward_one_step(
@@ -228,6 +228,10 @@ def pipeline_forward_one_step(
 
     return rendered_image, batched_means2D, batched_radiis
 
+import threading
+import queue
+import time
+
 def pipeline_offload_impl(
     gaussians,
     scene,
@@ -236,6 +240,7 @@ def pipeline_offload_impl(
     background,
     pipe_args,
     comm_stream,
+    perm_generator,
 ):
     args = utils.get_args()
 
@@ -244,15 +249,196 @@ def pipeline_offload_impl(
     opacity_gpu_origin = gaussians.get_opacity
     scaling_gpu_origin = gaussians.get_scaling
     rotation_gpu_origin = gaussians.get_rotation
+    bsz = len(batched_cameras)
+    n_gaussians = xyz_gpu.shape[0]
 
     # calculate gaussian visible filters for all cameras
-    filters = calculate_filters(
+    filters, camera_ids, gaussian_ids = calculate_filters(
         batched_cameras,
         xyz_gpu,
         opacity_gpu_origin,
         scaling_gpu_origin,
         rotation_gpu_origin
     ) # list of GPU long tensors. len(cameras)
+
+    # Sort cameras using these filters when overlap_cpuadam is enabled.
+    overlap_cpuadam_version = args.overlap_cpuadam_version
+    order_calculation_version = args.order_calculation_version
+    if args.overlap_cpuadam:
+        assert args.disable_auto_densification, "overlap_cpuadam does not support densification yet. Will fix this in the next commit."
+        if order_calculation_version == 0:
+            bool_filters = []
+            for filter in filters:
+                bool_filter = torch.zeros(n_gaussians, dtype=torch.int).cuda()
+                bool_filter[filter] = 1
+                bool_filters.append(bool_filter)
+            overlap_size_matrix = [[0 for _ in range(bsz)] for _ in range(bsz)]
+            for i in range(bsz):
+                for j in range(i+1, bsz):
+                    overlap_size_matrix[i][j] = (bool_filters[i]*bool_filters[j]).sum().item()
+                    overlap_size_matrix[j][i] = overlap_size_matrix[i][j]
+
+            ordered_indices = [0]
+            default_overlap_size = 0
+            our_overlap_size = 0
+            for i in range(1, bsz):
+                cur_index = ordered_indices[-1]
+                next_index = -1
+                max_overlap = -1
+                for j in range(bsz):
+                    if j in ordered_indices:
+                        continue
+                    overlap = overlap_size_matrix[cur_index][j]
+                    if overlap > max_overlap:
+                        next_index = j
+                        max_overlap = overlap
+                ordered_indices.append(next_index)
+
+                default_overlap_size += overlap_size_matrix[i-1][i]
+                our_overlap_size += max_overlap
+
+            # Permute cameras and filters to the ordered indices
+            batched_cameras = [batched_cameras[i] for i in ordered_indices]
+            filters = [filters[i] for i in ordered_indices]
+            bool_filters = [bool_filters[i] for i in ordered_indices]
+
+            # Calculate the indices at the beginning of each microbatch. 
+            finish_indices_filters = []
+            bool_filters_sum = torch.stack(bool_filters, dim=0).sum(dim=0)
+            for i in range(bsz+1):
+                # get the nonzero indices of bool_filters_sum
+                finish_indices_filter = torch.nonzero(bool_filters_sum == 0, as_tuple=False).squeeze(1).to(torch.int32)
+                finish_indices_filters.append(finish_indices_filter.cpu()) # int32 numpy array
+                bool_filters_sum[finish_indices_filter] = int(1e9) # then it will never be 0. 
+                if i < bsz:
+                    bool_filters_sum -= bool_filters[i]
+                else:
+                    assert torch.nonzero(bool_filters_sum == 0, as_tuple=False).shape[0] == 0, "bool_filters_sum should be all nonzero."
+            assert sum([x.shape[0] for x in finish_indices_filters]) == n_gaussians, "sum of finish_indices_filters should be equal"
+        elif order_calculation_version == 1:
+            # Use camera_ids and gaussian_ids to fill in the bool_filters
+            bool_filters = torch.zeros(bsz, n_gaussians, dtype=torch.uint8, device="cuda")
+            bool_filters[camera_ids, gaussian_ids] = 1
+            # Random sample gaussians_ids
+            n_sampled = n_gaussians // (bsz ** 2) // 256 * 256 # The matmul complexity is O(bsz^2 * dim) -> O(n_gaussians)
+            sampled_gaussian_ids = torch.randperm(n_gaussians, generator=perm_generator, device="cuda")[:n_sampled]
+            # sampled_bool_filters = bool_filters[:, sampled_gaussian_ids]
+            sampled_gaussian_ids = sampled_gaussian_ids.to(torch.int64)
+            sampled_bool_filters = torch.gather(bool_filters, 1, sampled_gaussian_ids.unsqueeze(0).expand(bsz, -1))
+            sampled_bool_filters = sampled_bool_filters.to(torch.float32) / 256  # maybe change to fp16 to save memory and compute
+            # Calculate the overlap matrix
+            overlap_matrix = torch.matmul(sampled_bool_filters, sampled_bool_filters.T) # bsz x bsz
+            assert overlap_matrix.shape == (bsz, bsz), "overlap_matrix should be a square matrix."
+            overlap_matrix_cpu = overlap_matrix.cpu().numpy()
+            # Calculate the order of cameras
+            ordered_indices = [0]
+            default_overlap_size = 0
+            our_overlap_size = 0
+            for i in range(1, bsz):
+                cur_index = ordered_indices[-1]
+                next_index = -1
+                max_overlap = -1
+                for j in range(bsz):
+                    if j in ordered_indices:
+                        continue
+                    overlap = overlap_matrix_cpu[cur_index][j]
+                    if overlap > max_overlap:
+                        next_index = j
+                        max_overlap = overlap
+                ordered_indices.append(next_index)
+
+                default_overlap_size += overlap_matrix_cpu[i-1][i]
+                our_overlap_size += max_overlap # This can be done on gpu with only single warp. 
+
+            # print(f"our overlap size: {our_overlap_size}, default overlap size: {default_overlap_size}") # DEBUG code. to be deleted. 
+
+            # Permute cameras and filters to the ordered indices
+            batched_cameras = [batched_cameras[i] for i in ordered_indices]
+            filters = [filters[i] for i in ordered_indices]
+            ordered_indices_gpu = torch.tensor(ordered_indices, dtype=torch.int64, device="cuda")
+            bool_filters = torch.gather(bool_filters, 0, ordered_indices_gpu.unsqueeze(1).expand(-1, n_gaussians))
+            bool_filters_prefixsum = torch.cumsum(bool_filters, dim=0)
+            # Last calculation position for each gaussian
+            last_calculation_position_for_each_gaussian = (bool_filters == 1) & (bool_filters_prefixsum == bool_filters_prefixsum[-1].unsqueeze(0)) # (bsz, n_gaussians)
+            last_calc_cameraids, last_calc_gaussianids = torch.nonzero(last_calculation_position_for_each_gaussian,
+                                                                       as_tuple=True) # shape: (n_nonzero_positions,) , (n_nonzero_positions,)
+            not_touched_gaussian_ids = torch.nonzero(bool_filters_prefixsum[-1] == 0, as_tuple=False).squeeze(1)
+            last_calc_nonzero_cameras_ids, last_calc_percamera_counts = torch.unique_consecutive(last_calc_cameraids, return_counts=True)
+            last_calc_percamera_counts_tmp = torch.zeros(bsz, dtype=torch.int32, device="cuda")
+            last_calc_percamera_counts_tmp[last_calc_nonzero_cameras_ids] = last_calc_percamera_counts.to(torch.int32)
+            last_calc_percamera_counts = last_calc_percamera_counts_tmp
+            assert last_calc_percamera_counts.shape[0] == bsz, "last_calc_percamera_counts should have bsz elements."
+            last_calc_percamera_counts_cpu = last_calc_percamera_counts.cpu().tolist()
+            last_calc_percamera_counts_cpu = [not_touched_gaussian_ids.shape[0]] + last_calc_percamera_counts_cpu
+            last_calc_gaussianids = torch.cat([not_touched_gaussian_ids, last_calc_gaussianids], dim=0).to(torch.int32)
+            last_calc_gaussianids_cpu = last_calc_gaussianids.cpu()
+            last_calc_gaussian_ids_per_camera = torch.split(last_calc_gaussianids_cpu, last_calc_percamera_counts_cpu)
+            assert sum(last_calc_percamera_counts_cpu) == n_gaussians, "sum(last_calc_percamera_counts_cpu) is supposed to be equal to gaussian_ids.shape[0]"
+            
+            finish_indices_filters = last_calc_gaussian_ids_per_camera
+            assert len(finish_indices_filters) == bsz + 1, "len(finish_indices_filters) should be equal to bsz + 1"
+        else:
+            raise ValueError("Invalid order calculation version.")
+
+        # Define python thread for computing cpuadam
+        def cpuadam_thread(bsz,
+                           n_gaussians,
+                           microbatch_gradient_send_back_events,
+                           thread_sync_signal_events,
+                           finish_indices_filters,
+                           cpu_adam,
+                           parameters,
+                           parameters_grad):
+
+            if overlap_cpuadam_version == 0:
+                parameters.grad = parameters_grad
+
+                cpu_adam.sparse_adam_inc_step() # this is related to lr. 
+                if not args.stop_update_param:
+                    cpu_adam.sparse_step(sparse_indices=finish_indices_filters[0], version=2, scale=1.0/bsz)
+
+                for i in range(0, bsz):
+                    
+                    thread_sync_signal_events[i].wait() # wait for the signal of finishing the i-th microbatch.
+
+                    finish_event = microbatch_gradient_send_back_events[i] # event of finishing i-th micro batch.
+                    finish_event.synchronize() # synchronize with the gpu event on computation stream.
+
+                    finish_indices_filter = finish_indices_filters[i+1] # torch int32 array on cpu
+                    if not args.stop_update_param and finish_indices_filter.shape[0] > 0: # the finish filter should not be empty
+                        cpu_adam.sparse_step(sparse_indices=finish_indices_filter, version=2, scale=1.0/bsz)
+
+                parameters_grad.zero_() # clear the grad buffer so that it can be reused in the next iteration. 
+            elif overlap_cpuadam_version == 1:
+                parameters.grad = parameters_grad / bsz
+                cpu_adam.step()
+                parameters_grad.zero_() # clear the grad buffer so that it can be reused in the next iteration. 
+            elif overlap_cpuadam_version == 2:
+                parameters.grad = parameters_grad / bsz
+                cpu_adam.sparse_adam_inc_step()
+                for filter in finish_indices_filters:
+                    cpu_adam.sparse_step(sparse_indices=filter, version=1, scale=1.0/bsz)
+                parameters_grad.zero_() # clear the grad buffer so that it can be reused in the next iteration. 
+            else:
+                raise ValueError("Invalid version number for cpuadam_thread.")
+
+        # Create thread for cpuadam
+        thread_sync_signal_events = [threading.Event() for _ in range(bsz)]
+        main_thread_sync_signal_idx = 0
+        microbatch_gradient_send_back_events = [
+            torch.cuda.Event() for _ in range(bsz)
+        ]
+        cpuadam_worker = threading.Thread(target=cpuadam_thread, args=(bsz,
+                                                                    n_gaussians,
+                                                                    microbatch_gradient_send_back_events,
+                                                                    thread_sync_signal_events,
+                                                                    finish_indices_filters,
+                                                                    gaussians.optimizer.cpu_adam,
+                                                                    gaussians._parameters,
+                                                                    parameters_grad_buffer[:n_gaussians, :],
+                                                                    ))
+        if overlap_cpuadam_version == 0:
+            cpuadam_worker.start()
 
     # accumulate gradients at opacity_gpu, scaling_gpu, rotation_gpu since they are computed afer the activation functions.
     # no need for xyz since it does not have activation function.
@@ -327,6 +513,11 @@ def pipeline_offload_impl(
                     True,
                     grid_size, block_size
                 )
+                if args.overlap_cpuadam:
+                    event = microbatch_gradient_send_back_events[main_thread_sync_signal_idx]
+                    event.record()
+                    thread_sync_signal_events[main_thread_sync_signal_idx].set()
+                    main_thread_sync_signal_idx += 1
 
         torch.cuda.nvtx.range_push("forward_pass")
         this_filter = filters[micro_idx]
@@ -375,6 +566,12 @@ def pipeline_offload_impl(
                     True,
                     grid_size, block_size,
                 )
+                if args.overlap_cpuadam:
+                    event = microbatch_gradient_send_back_events[main_thread_sync_signal_idx]
+                    event.record()
+                    thread_sync_signal_events[main_thread_sync_signal_idx].set()
+                    main_thread_sync_signal_idx += 1
+
                 # timers.stop("fused grad transfer")
 
                 # TODO: Free grads on gpu, I am not sure whether this is safe or not. 
@@ -408,13 +605,43 @@ def pipeline_offload_impl(
                 True,
                 16, 256,
             )
+            if args.overlap_cpuadam:
+                event = microbatch_gradient_send_back_events[main_thread_sync_signal_idx]
+                event.record()
+                thread_sync_signal_events[main_thread_sync_signal_idx].set()
+                main_thread_sync_signal_idx += 1
 
-
-    torch.cuda.synchronize()
     opacity_gpu_origin.backward(opacity_gpu.grad)
     scaling_gpu_origin.backward(scaling_gpu.grad)
     rotation_gpu_origin.backward(rotation_gpu.grad)
 
+    if args.overlap_cpuadam:
+        assert main_thread_sync_signal_idx == bsz, "main_thread_sync_signal_idx should be equal to bsz."
+        if overlap_cpuadam_version != 0:
+            cpuadam_worker.start()
+        assert args.lr_scale_mode == "sqrt", "Overlap CPUAdam only supports sqrt lr scaling"
+        assert args.gpu_cache == "xyzosr", "Overlap CPUAdam only supports xyzosr cache"
+        assert not args.stop_update_param, "Overlap CPUAdam does not support stop_update_param"
+        # only perform gpu adam
+        for param in gaussians.all_parameters()[:4]: # the first 4 parameters are on gpu
+            if param.grad is not None:
+                param.grad /= args.bsz
+        if not args.stop_update_param:
+            gaussians.optimizer.gpu_adam.step()
+        gaussians.optimizer.gpu_adam.zero_grad(set_to_none=True)
+        cpuadam_worker.join()
+    else:
+        torch.cuda.synchronize() # we need to make sure gradients have all been sent back to cpu. 
+        gaussians._parameters.grad = gaussians.parameters_grad_buffer[:N, :]
+        for param in gaussians.all_parameters():
+            if param.grad is not None:
+                param.grad /= args.bsz
+        if not args.stop_update_param:
+            gaussians.optimizer.step()
+        gaussians.optimizer.zero_grad(set_to_none=True)
+        gaussians.parameters_grad_buffer[:N, :].zero_()
+
+    torch.cuda.synchronize()
     return losses
 
 def baseline_accumGrads_micro_step(
@@ -674,6 +901,10 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         gc.disable()
         gc.collect()
 
+
+    perm_generator = torch.Generator(device="cuda")
+    perm_generator.manual_seed(1)
+
     ema_loss_for_log = 0
     means3D_all = None # A handle to means3D_all on gpu
     send2gpu_filter = None # A handle to send2gpu_filter on gpu
@@ -783,11 +1014,11 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 gaussians.parameters_grad_buffer,
                 background,
                 pipe_args,
-                comm_stream
+                comm_stream,
+                perm_generator
             )
             batched_screenspace_pkg = {}
 
-            gaussians._parameters.grad = gaussians.parameters_grad_buffer[:N, :]
             
             # Sync losses in the batch
             timers.start("sync_loss_and_log")
@@ -1261,7 +1492,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 end2end_timers.start()
 
             # Optimizer step
-            if iteration < opt_args.iterations:
+            if iteration < opt_args.iterations and not args.pipelined_offload:
                 # utils.memory_report("before optimizer step")
                 timers.start("optimizer_step")
 
@@ -1327,6 +1558,11 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     
     if args.nsys_profile:
         torch.cuda.cudart().cudaProfilerStop()
+    
+    # HACK
+    parameters = gaussians._parameters[::5000].cpu().detach().numpy().tolist()
+    json.dump(parameters, open(os.path.join(args.model_path, "shs_parameters.json"), "w"))
+
 
 
 def training_report(

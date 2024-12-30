@@ -226,6 +226,9 @@ class DebugParams(ParamGroup):
         self.manual_gc = False
         self.offload_shs_grad_before_every_microbatch = False
         self.comm_stream_priority = 0
+        self.overlap_cpuadam = False
+        self.overlap_cpuadam_version = 0
+        self.order_calculation_version = 1
 
         super().__init__(parser, "Debug Parameters")
 
