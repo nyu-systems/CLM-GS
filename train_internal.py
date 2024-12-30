@@ -265,7 +265,6 @@ def pipeline_offload_impl(
     overlap_cpuadam_version = args.overlap_cpuadam_version
     order_calculation_version = args.order_calculation_version
     if args.overlap_cpuadam:
-        assert args.disable_auto_densification, "overlap_cpuadam does not support densification yet. Will fix this in the next commit."
         if order_calculation_version == 0:
             bool_filters = []
             for filter in filters:
