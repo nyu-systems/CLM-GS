@@ -1130,7 +1130,8 @@ def pipeline_offload_retention_impl(
     losses = []
     shs_retent = None
     shs_grad = None
-    grid_size, block_size = args.grid_size, 256
+    grid_size_H, block_size_H = args.grid_size_H, 256
+    grid_size_D, block_size_D = args.grid_size_D, 256
     for micro_idx in range(num_micro_batches):
         torch.cuda.nvtx.range_push("micro_batch_idx: " + str(micro_idx))
 
@@ -1169,7 +1170,10 @@ def pipeline_offload_retention_impl(
                     rtnt_indices_to_param[micro_idx + 1],
                     param_indices_from_host[micro_idx + 1],
                     param_indices_from_rtnt[micro_idx + 1],
-                    grid_size, block_size
+                    grid_size_H,
+                    block_size_H,
+                    grid_size_D,
+                    block_size_D
                 )
                 shs_next.requires_grad_(True)
                 
@@ -1200,7 +1204,10 @@ def pipeline_offload_retention_impl(
                     grad_indices_to_host[micro_idx],
                     grad_indices_to_rtnt[micro_idx],
                     True,
-                    grid_size, block_size
+                    grid_size_H,
+                    block_size_H,
+                    grid_size_D,
+                    block_size_D
                 )
                 
                 if args.overlap_cpuadam:
