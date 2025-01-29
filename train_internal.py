@@ -941,6 +941,99 @@ def pipeline_offload_retention_impl(
             assert len(finish_indices_filters) == bsz + 1, "len(finish_indices_filters) should be equal to bsz + 1"
             assert sum([len(indicies) for indicies in finish_indices_filters]) == n_gaussians
 
+        elif order_calculation_version == 3:
+            gs_bitmap = torch.zeros(bsz, n_gaussians, dtype=torch.uint8, device="cuda")
+            gs_bitmap[camera_ids, gaussian_ids] = 1
+            zero_bitvec = torch.ones((n_gaussians,), dtype=torch.uint8, device="cuda")
+            sum_vec = torch.empty((bsz, ), dtype=torch.int32, device="cuda")
+            for i in range(bsz):
+                sum_vec[i] = len(filters[i])
+            
+            torch.cuda.nvtx.range_push("cumsum - 1")
+            retent_index = torch.empty_like(gs_bitmap, dtype=torch.int64)
+            for i in range(bsz):
+                retent_index[i] = torch.cumsum(gs_bitmap[i], dim=0, dtype=torch.int64) - 1
+            torch.cuda.nvtx.range_pop()
+            
+            torch.cuda.nvtx.range_push("init lists")
+            not_touched_ids = torch.nonzero(torch.all(gs_bitmap == 0, dim=0)).flatten()
+            cur_cam = min(enumerate(filters), key=lambda x: len(x[1]))[0] #  make the sparsest sample the last one
+            ordered_cams = torch.empty((bsz,), dtype=torch.int32, device="cuda")
+            ordered_cams[0] = cur_cam
+            update_ls = [torch.nonzero(gs_bitmap[cur_cam, :]).flatten()]
+            torch.cuda.nvtx.range_pop()
+
+            torch.cuda.nvtx.range_push("order calculation loop + reverse")
+            for i in range(1, bsz):
+                cur_cam = ordered_cams[i - 1]
+                # col_to_reset = torch.nonzero(gs_bitmap[cur_cam] & zero_bitvec).flatten()
+                col_to_reset = next_update if i > 1 else torch.nonzero(gs_bitmap[cur_cam] & zero_bitvec).flatten()
+                zero_bitvec.scatter_(dim=0, index=col_to_reset, src=torch.zeros_like(col_to_reset, dtype=torch.uint8))
+                col_to_reset = col_to_reset.expand(bsz, -1)
+                reset_col_gathered = torch.gather(gs_bitmap, dim=1, index=col_to_reset)
+                reset_sum = torch.sum(reset_col_gathered, dim=1)
+                sum_vec = sum_vec - reset_sum
+                sum_vec[ordered_cams[:i].squeeze()] = torch.iinfo(torch.int32).max
+                next_cam = torch.argmin(sum_vec)
+                ordered_cams[i] = next_cam
+                next_update = torch.nonzero(gs_bitmap[next_cam] & zero_bitvec).flatten()
+                update_ls.append(next_update)
+
+            update_ls.append(not_touched_ids)
+            update_ls.reverse()
+            torch.flip(ordered_cams, dims=[0])
+            torch.cuda.nvtx.range_pop()
+
+            batched_cameras = [batched_cameras[i] for i in ordered_cams]
+            filters = [filters[i] for i in ordered_cams]
+
+            # calculate filters to index retent shs on gpu and shs to load from cpu
+            host_indices_to_param = [None]
+            param_indices_from_host = [None]
+            rtnt_indices_to_param = [None]
+            param_indices_from_rtnt = [None]
+
+            # for bwd, since we already have a mapping between device param and device retent, 
+            # we just need to add a mapping from device grad to host grad
+            host_indices_from_grad = [None]
+            grad_indices_to_host = [None]
+
+            torch.cuda.nvtx.range_push("mask calculation loop")
+            for i in range(1, bsz):
+                curr_cam = ordered_cams[i]
+                prev_cam = ordered_cams[i-1]
+                curr_idx = retent_index[curr_cam]
+                prev_idx = retent_index[prev_cam]
+
+                idx_h = torch.nonzero(gs_bitmap[curr_cam] & ~gs_bitmap[prev_cam]).flatten()
+                host_indices_to_param.append(idx_h)
+                param_indices_from_host.append(torch.gather(curr_idx, dim=0, index=idx_h))
+
+                idx_d = torch.nonzero(gs_bitmap[curr_cam] & gs_bitmap[prev_cam]).flatten() # overlap
+                rtnt_indices_to_param.append(torch.gather(prev_idx, dim=0, index=idx_d))
+                param_indices_from_rtnt.append(torch.gather(curr_idx, dim=0, index=idx_d))
+
+                idx_g = torch.nonzero(gs_bitmap[prev_cam] & ~gs_bitmap[curr_cam]).flatten()
+                host_indices_from_grad.append(idx_g)
+                grad_indices_to_host.append(torch.gather(prev_idx, dim=0, index=idx_g))
+            torch.cuda.nvtx.range_pop()
+
+            rtnt_indices_from_grad = param_indices_from_rtnt
+            grad_indices_to_rtnt = rtnt_indices_to_param
+
+            torch.cuda.nvtx.range_push("transfer cpuadam update list to cpu")
+            cat_update_ls = torch.cat(update_ls, dim=0).to(torch.int32)
+            # cat_update_ls = torch.cat(update_ls, dim=0)
+            cat_update_ls_cpu = torch.empty_like(cat_update_ls, device="cpu", pin_memory=True)
+            update_ls_dim = [len(update) for update in update_ls]
+            cat_update_ls_cpu.copy_(cat_update_ls)
+            update_ls_cpu = torch.split(cat_update_ls_cpu, update_ls_dim, dim=0)
+            torch.cuda.nvtx.range_pop()
+
+            finish_indices_filters = update_ls_cpu
+
+            assert len(finish_indices_filters) == bsz + 1, "len(finish_indices_filters) should be equal to bsz + 1"
+            assert sum([len(indicies) for indicies in finish_indices_filters]) == n_gaussians
         else:
             raise ValueError("Invalid order calculation version.")
 
