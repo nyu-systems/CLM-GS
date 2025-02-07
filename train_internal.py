@@ -2278,13 +2278,12 @@ def pipeline_offload_retention_optimized_v3_impl(
     num_micro_batches = len(batched_cameras)
     N = gaussians._xyz.shape[0]
     losses = []
-    shs_retent = None
+    shs_retents = [torch.empty(0) for i in range(num_micro_batches)]
     shs_grad = None
     with torch.cuda.stream(comm_stream):
         this_bit = torch.zeros((N,), dtype=torch.uint8, device="cuda")
         next_bit = torch.zeros((N,), dtype=torch.uint8, device="cuda")
         retention_vec = torch.empty((N,), dtype=torch.int32, device="cuda")
-        shs_grad_next = torch.zeros((len(filters[0]), 48), device="cuda")
 
     grid_size, block_size = args.grid_size_H, 256
     grid_size_D, block_size_D = args.grid_size_D, 256
@@ -2296,32 +2295,33 @@ def pipeline_offload_retention_optimized_v3_impl(
 
         # load the parameters for the first sample in the batch
         if micro_idx == 0:
+            shs = torch.empty(this_filter_len, 48, device="cuda", requires_grad=True)
+
             with torch.cuda.stream(comm_stream):
                 # Forward pass
-                shs = torch.empty(this_filter_len, 48, device="cuda", requires_grad=True)
-
                 send_shs2gpu_stream(
                     shs,
                     gaussians._parameters,# Why this is a detach? May be this is redundant? 
                     filters[micro_idx],
                     grid_size, block_size
                 )
-                shs_retent = shs.detach()
-                # create an event
+                shs_retents[micro_idx] = shs.detach()
                 cpu2gpu_event = torch.cuda.Event(enable_timing=True)
                 cpu2gpu_event.record(comm_stream)
             
         else:
-            shs = shs_next # need to verify that is this the correct way to do this? 
-            shs_retent = shs.detach()
+            shs = shs_next
+            shs_retents[micro_idx] = shs.detach()
             cpu2gpu_event = next_cpu2gpu_event
 
-        with torch.cuda.stream(comm_stream):
-            # Forward pass
-            if micro_idx < num_micro_batches - 1:
-                shs_next = torch.empty(filters[micro_idx+1].shape[0], 48, device="cuda")
+        if micro_idx < num_micro_batches - 1:
+            # Before allocating memory for next shs, free previous retent.
+            if micro_idx > 0:
+                next_cpu2gpu_event.wait(default_stream) # Make sure cpu2gpu comm in prev iter has completed and retent is no longer needed.
+                shs_retents[micro_idx-1] = None
+            shs_next = torch.empty(filters[micro_idx+1].shape[0], 48, device="cuda")
 
-                # compute indices on the fly
+            with torch.cuda.stream(comm_stream):
                 if micro_idx == 0:
                     this_bit.scatter_(dim=0, index=filters[micro_idx], src=torch.ones(filters[micro_idx].shape[0], dtype=torch.uint8, device="cuda"))
                     next_bit.scatter_(dim=0, index=filters[micro_idx+1], src=torch.ones(filters[micro_idx+1].shape[0], dtype=torch.uint8, device="cuda"))
@@ -2335,7 +2335,6 @@ def pipeline_offload_retention_optimized_v3_impl(
                 # When using `torch.nonzero_static`, `size`` need to be a scalar on host, otherwise it falls back to blocking.
                 # retention_vec: next index
                 retention_vec.scatter_(dim=0, index=filters[micro_idx+1], src=torch.arange(filters[micro_idx+1].shape[0], dtype=torch.int32, device="cuda"))
-                # idx_h = torch.nonzero(~this_bit & next_bit).flatten() # torch.nonzero() blocks cpu!!!
                 bit_h = ~this_bit & next_bit
                 idx_h = torch.empty((cnt_h[micro_idx],), dtype=torch.int64, device="cuda")
                 idx_h = torch.nonzero_static(bit_h, size=cnt_h[micro_idx]).flatten()
@@ -2343,13 +2342,11 @@ def pipeline_offload_retention_optimized_v3_impl(
                 param_indices_from_host = torch.gather(retention_vec, dim=0, index=idx_h)
                 del idx_h, bit_h
                 
-                # idx_d = torch.nonzero(this_bit & next_bit).flatten() # overlap # torch.nonzero() blocks cpu!!!
                 bit_d = this_bit & next_bit
                 idx_d = torch.nonzero_static(bit_d, size=cnt_d[micro_idx]).flatten()
                 param_indices_from_rtnt = torch.gather(retention_vec, dim=0, index=idx_d)
                 del bit_d
 
-                # retention_vec: this index
                 retention_vec.scatter_(dim=0, index=filters[micro_idx], src=torch.arange(filters[micro_idx].shape[0], dtype=torch.int32, device="cuda"))
                 rtnt_indices_to_param = torch.gather(retention_vec, dim=0, index=idx_d)
                 del idx_d
@@ -2357,7 +2354,7 @@ def pipeline_offload_retention_optimized_v3_impl(
                 send_shs2gpu_stream_retention(
                     shs_next, # shs to fill
                     gaussians._parameters, # shs on host
-                    shs_retent, # shs from last iter
+                    shs_retents[micro_idx], # shs from last iter
                     host_indices_to_param,
                     rtnt_indices_to_param,
                     param_indices_from_host,
@@ -2372,11 +2369,6 @@ def pipeline_offload_retention_optimized_v3_impl(
                 # create an event
                 next_cpu2gpu_event = torch.cuda.Event(enable_timing=True)
                 next_cpu2gpu_event.record(comm_stream)
-
-        with torch.cuda.stream(comm_stream):
-            shs_grad = shs_grad_next
-            shs_grad_init_event = torch.cuda.Event()
-            shs_grad_init_event.record(comm_stream)
 
         torch.cuda.nvtx.range_push("forward_pass")
         filtered_xyz_gpu = torch.gather(xyz_gpu, 0, this_filter.reshape(-1, 1).expand(-1, 3))
@@ -2401,33 +2393,44 @@ def pipeline_offload_retention_optimized_v3_impl(
 
         loss = torch_compiled_loss(rendered_image, batched_cameras[micro_idx].original_image)
         torch.cuda.nvtx.range_pop()
+
+        # Before allocating memory for this grad, free previous grad.
+        if micro_idx > 0:
+            next_gpu2cpu_event.wait(default_stream) # Make sure gpu2cpu comm in prev iter has completed and prev grad is no longer needed.
+            del shs_grad
+
         torch.cuda.nvtx.range_push("backward_pass")
         loss.backward()
         torch.cuda.nvtx.range_pop()
+        del rendered_image
 
-        # move shs.grad into shs_grad
-        shs_grad_init_event.wait(default_stream) # wait for `shs_grad` to finish init`
-        shs_grad.add_(shs.grad)
+        if micro_idx == 0:
+            shs_grad = torch.empty_like(shs, device="cuda")
+            shs_grad.copy_(shs.grad)
+        else:
+            shs_grad = shs_grad_next
+            shs_grad.add_(shs.grad)
 
-        # free shs
+        # Free shs.
         shs.grad = None
-        del shs
+        del shs, filtered_shs
 
         losses.append(loss.detach())
+        del loss
 
         gpu2cpu_event = torch.cuda.Event(enable_timing=True)
         gpu2cpu_event.record(default_stream)
 
         if not args.offload_shs_grad_before_every_microbatch:
             if micro_idx < num_micro_batches - 1:
-                with torch.cuda.stream(comm_stream):
-                    shs_grad_next = torch.zeros_like(shs_next, device="cuda")
+                shs_grad_next = torch.zeros_like(shs_next, device="cuda")
+                shs_grad_next_init_event = torch.cuda.Event(enable_timing=True)
+                shs_grad_next_init_event.record(default_stream)
 
-                    # compute indices on the fly
+                with torch.cuda.stream(comm_stream):
                     rtnt_indices_from_grad = param_indices_from_rtnt
                     grad_indices_to_rtnt = rtnt_indices_to_param
 
-                    # idx_g = torch.nonzero(this_bit & ~next_bit).flatten() # torch.nonzero() blocks cpu!!!
                     bit_g = this_bit & ~next_bit
                     idx_g = torch.nonzero_static(bit_g, size=cnt_g[micro_idx]).flatten()
 
@@ -2436,6 +2439,7 @@ def pipeline_offload_retention_optimized_v3_impl(
                     del idx_g, bit_g
 
                     gpu2cpu_event.wait(comm_stream)
+                    shs_grad_next_init_event.wait(comm_stream) # Wait for all preceeding init to finish
                     # sync event of default_stream with comm_stream
 
                     send_shs2cpu_grad_buffer_stream_retention(
@@ -2452,6 +2456,8 @@ def pipeline_offload_retention_optimized_v3_impl(
                         grid_size_D,
                         block_size_D
                     )
+                    next_gpu2cpu_event = torch.cuda.Event(enable_timing=True)
+                    next_gpu2cpu_event.record(comm_stream)
 
                     if args.overlap_cpuadam:
                         if args.overlap_cpuadam_version == 3:
