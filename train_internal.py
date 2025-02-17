@@ -2642,6 +2642,7 @@ def pipeline_offload_retention_optimized_v4_impl(
     pipe_args,
     comm_stream,
     perm_generator,
+    log_this_batch_filter=False,
 ):
     args = utils.get_args()
     iteration = utils.get_cur_iter()
@@ -2667,6 +2668,14 @@ def pipeline_offload_retention_optimized_v4_impl(
         rotation_gpu_origin
     ) # list of GPU long tensors. len(cameras)
     torch.cuda.nvtx.range_pop()
+
+    if log_this_batch_filter:
+        f_dump = {
+            "iteration": iteration,
+            "filters": [f.tolist() for f in filters],
+        }
+        with open(os.path.join(args.model_path, "sampled_filters.log"), 'a') as file:
+            file.write(json.dumps(f_dump) + "\n")
 
     # Sort cameras using these filters when overlap_cpuadam is enabled.
     overlap_cpuadam_version = args.overlap_cpuadam_version
@@ -3344,6 +3353,11 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     perm_generator = torch.Generator(device="cuda")
     perm_generator.manual_seed(1)
 
+    if args.log_sampled_filter != 0:
+        assert args.retention == 4, "Only implemented for retention v4"
+        selected_batches = torch.randperm(min(len(scene.train_cameras_info), args.iterations) // args.bsz, device="cuda", generator=perm_generator)[:args.log_sampled_filter]
+        selected_batches = [b * args.bsz + 1 for b in selected_batches]
+
     ema_loss_for_log = 0
     means3D_all = None # A handle to means3D_all on gpu
     send2gpu_filter = None # A handle to send2gpu_filter on gpu
@@ -3357,6 +3371,10 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 log_file.write(
                     "[ITER {}] Tracing cuda memory usage.\n".format(iteration)
                 )
+        if args.log_sampled_filters != 0 and iteration in selected_batches:
+            log_this_batch_filters = True
+        else:
+            log_this_batch_filters = False
         
         # Step Initialization
         if iteration // args.bsz % 30 == 0:
@@ -3505,7 +3523,8 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                     background,
                     pipe_args,
                     comm_stream,
-                    perm_generator
+                    perm_generator,
+                    log_this_batch_filters,
                 )
             else:
                 losses = pipeline_offload_impl(
