@@ -158,7 +158,7 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     # TODO: offload: Init gaussian params on cpu.
-    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float):
+    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float, subsample_ratio=1.0):
         log_file = utils.get_log_file()
         # loading could replicated on all ranks.
         self.spatial_lr_scale = spatial_lr_scale
@@ -176,23 +176,36 @@ class GaussianModel:
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
 
-        if utils.GLOBAL_RANK == 0:
-            print(
-                "Number of points before initialization : ", fused_point_cloud.shape[0]
-            )
+        N = fused_point_cloud.shape[0]
+        print("Number of points before initialization : ", N)
 
         dist2 = torch.clamp_min(
             distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
             0.0000001,
         )
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3).to("cuda")
-        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+
+        if subsample_ratio != 1.0:
+            assert subsample_ratio > 0 and subsample_ratio < 1
+            sub_N = int(N * subsample_ratio)
+            print("Downsample ratio: ", subsample_ratio)
+            print("Number of points after downsampling : ", sub_N)
+
+            perm_generator = torch.Generator()
+            perm_generator.manual_seed(1)
+            subsampled_set_gpu, _ = torch.randperm(N)[:sub_N].sort()
+            fused_point_cloud = fused_point_cloud[subsampled_set_gpu]
+            features = features[subsampled_set_gpu]
+            scales = scales[subsampled_set_gpu]
+            N = sub_N           
+
+        rots = torch.zeros((N, 4), device="cuda")
         rots[:, 0] = 1
 
         opacities = inverse_sigmoid(
             0.1
             * torch.ones(
-                (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
+                (N, 1), dtype=torch.float, device="cuda"
             )
         )
 
@@ -206,7 +219,7 @@ class GaussianModel:
             shard_rank = utils.DEFAULT_GROUP.rank()
 
             point_ind_l, point_ind_r = utils.get_local_chunk_l_r(
-                fused_point_cloud.shape[0], shard_world_size, shard_rank
+                N, shard_world_size, shard_rank
             )
             fused_point_cloud = fused_point_cloud[point_ind_l:point_ind_r].contiguous()
             features = features[point_ind_l:point_ind_r].contiguous()
@@ -215,7 +228,7 @@ class GaussianModel:
             opacities = opacities[point_ind_l:point_ind_r].contiguous()
             log_file.write(
                 "rank: {}, Number of initialized points: {}\n".format(
-                    utils.GLOBAL_RANK, fused_point_cloud.shape[0]
+                    utils.GLOBAL_RANK, N
                 )
             )
             # print("rank", utils.GLOBAL_RANK, "Number of initialized points after gaussians_distribution : ", fused_point_cloud.shape[0])
@@ -223,7 +236,7 @@ class GaussianModel:
         if args.drop_initial_3dgs_p > 0.0:
             # drop each point with probability args.drop_initial_3dgs_p
             drop_mask = (
-                np.random.rand(fused_point_cloud.shape[0]) > args.drop_initial_3dgs_p
+                np.random.rand(N) > args.drop_initial_3dgs_p
             )
             fused_point_cloud = fused_point_cloud[drop_mask]
             features = features[drop_mask]
@@ -232,7 +245,7 @@ class GaussianModel:
             opacities = opacities[drop_mask]
             log_file.write(
                 "rank: {}, Number of initialized points after random drop: {}\n".format(
-                    utils.GLOBAL_RANK, fused_point_cloud.shape[0]
+                    utils.GLOBAL_RANK, N
                 )
             )
             # print("rank", utils.GLOBAL_RANK, "Number of initialized points after random drop : ", fused_point_cloud.shape[0])

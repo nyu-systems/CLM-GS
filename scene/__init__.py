@@ -67,10 +67,10 @@ class Scene:
             raise ValueError("No valid dataset found in the source path")
 
         if not self.loaded_iter:
-            with open(scene_info.ply_path, "rb") as src_file, open(
-                os.path.join(self.model_path, "input.ply"), "wb"
-            ) as dest_file:
-                dest_file.write(src_file.read())
+            # with open(scene_info.ply_path, "rb") as src_file, open(
+            #     os.path.join(self.model_path, "input.ply"), "wb"
+            # ) as dest_file:
+                # dest_file.write(src_file.read())
             json_cams = []
             camlist = []
             if scene_info.test_cameras:
@@ -142,20 +142,29 @@ class Scene:
 
         if args.decode_dataset_to_disk:
             # Predecode dataset as raw files to local disk
-            self.decode_dataset_path = os.path.join(args.decode_dataset_path, "dataset_raw")
-            statvfs = os.statvfs(self.decode_dataset_path)
+            statvfs = os.statvfs(args.decode_dataset_path)
             available_space_in_GB = 1.0 * statvfs.f_frsize * statvfs.f_bavail / 1e9
             assert available_space_in_GB >= dataset_size_in_GB, f"Not enough space in disk for decompressed dataset. avail: {available_space_in_GB}. need: {dataset_size_in_GB}"
+            self.decode_dataset_path = os.path.join(args.decode_dataset_path, "dataset_raw")
             
-            log_file.write(f"[NOTE]: Pre-decoding dataset({dataset_size_in_GB}GB) to disk dir: {self.decode_dataset_path}\n")
-            utils.print_rank_0("Decoding Training Cameras To Disk")
+            if (not args.reuse_decoded_dataset) or (not os.path.isdir(os.path.join(args.decode_dataset_path, 'dataset_raw'))):
+                log_file.write(f"[NOTE]: Pre-decoding dataset({dataset_size_in_GB}GB) to disk dir: {self.decode_dataset_path}\n")
+                os.makedirs(os.path.join(self.decode_dataset_path, "dataset_raw"), exist_ok=True)
+                do_decode = True
+            else:
+                log_file.write(f"[NOTE]: Reusing decoded dataset({dataset_size_in_GB}GB) in disk dir: {self.decode_dataset_path}\n")
+                utils.print_rank_0("Reusing decoded datase on disk.")
+                do_decode = False
+
             self.train_cameras = None
             self.test_cameras = None
             if args.num_train_cameras >= 0:
                 train_cameras = scene_info.train_cameras[: args.num_train_cameras]
             else:
                 train_cameras = scene_info.train_cameras
-            predecode_dataset_to_disk(train_cameras, args)
+            if do_decode:
+                utils.print_rank_0("Decoding Training Cameras To Disk")
+                predecode_dataset_to_disk(train_cameras, args)
             self.train_cameras_info = train_cameras
             
             if len(train_cameras) > 0:
@@ -167,12 +176,13 @@ class Scene:
                 )
             
             if args.eval:
-                utils.print_rank_0("Decoding Test Cameras To Disk")
                 if args.num_test_cameras >= 0:
                     test_cameras = scene_info.test_cameras[: args.num_test_cameras]
                 else:
                     test_cameras = scene_info.test_cameras
-                predecode_dataset_to_disk(test_cameras, args)
+                if do_decode:
+                    utils.print_rank_0("Decoding Test Cameras To Disk")
+                    predecode_dataset_to_disk(test_cameras, args)
                 self.test_cameras_info = test_cameras
                 
                 if len(test_cameras) > 0:
@@ -242,7 +252,7 @@ class Scene:
             if args.offload:
                 self.gaussians.create_from_pcd_offloaded(scene_info.point_cloud, self.cameras_extent, args.subsample_ratio)
             else:
-                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, args.subsample_ratio)
 
         utils.check_initial_gpu_memory_usage("after initializing point cloud")
         utils.log_cpu_memory_usage("after loading initial 3dgs points")
@@ -277,7 +287,7 @@ class Scene:
 
     def clean_up(self):
         # Remove the predecoded dataset from disk
-        if self.args.decode_dataset_to_disk:
+        if self.args.decode_dataset_to_disk and not self.args.reuse_decoded_dataset:
             clean_up_disk(self.args)
             utils.print_rank_0("Cleaned up decoded dataset on disk.")
 

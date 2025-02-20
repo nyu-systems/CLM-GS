@@ -244,21 +244,19 @@ def decompressed_images_from_camInfos_multiprocess_sharedmem(
 
 def predecode_dataset_to_disk(cam_infos, args):
     args = get_args()
-    if (not args.reuse_decoded_dataset) or (not os.path.isdir(os.path.join(args.decode_dataset_path, 'dataset_raw'))):
-        orig_h, orig_w = utils.get_img_size()
-        for id, c in tqdm(enumerate(cam_infos), total=len(cam_infos)):
-            img = Image.open(c.image_path)
-            img = img.crop((0, 0, orig_w, orig_h)) # crop the image to the minimum size in dataset
-            raw_data = img.tobytes()
-            raw_data_path = os.path.join(args.decode_dataset_path, 'dataset_raw', (c.image_name.lstrip('/') + '.raw'))
-            os.makedirs(os.path.dirname(raw_data_path), exist_ok=True)
-            with open(raw_data_path, 'wb+') as raw_file:
-                raw_file.write(raw_data)
+    orig_h, orig_w = utils.get_img_size()
+    for id, c in tqdm(enumerate(cam_infos), total=len(cam_infos)):
+        img = Image.open(c.image_path)
+        img = img.crop((0, 0, orig_w, orig_h)) # crop the image to the minimum size in dataset
+        raw_data = img.tobytes()
+        raw_data_path = os.path.join(args.decode_dataset_path, 'dataset_raw', (c.image_name.lstrip('/') + '.raw'))
+        os.makedirs(os.path.dirname(raw_data_path), exist_ok=True)
+        with open(raw_data_path, 'wb+') as raw_file:
+            raw_file.write(raw_data)
 
 def clean_up_disk(args):
     args = get_args()
-    if not args.reuse_decoded_dataset:
-        shutil.rmtree(os.path.join(args.decode_dataset_path, 'dataset_raw'))
+    shutil.rmtree(os.path.join(args.decode_dataset_path, 'dataset_raw'))
 
 def cameraList_from_camInfos(cam_infos, args):
     args = get_args()
