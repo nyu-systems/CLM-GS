@@ -24,6 +24,7 @@ import utils.general_utils as utils
 import torch.distributed as dist
 import cpu_adam
 from optimizer import UnifiedAdam, SelectiveAdam
+import numba.cuda
 
 lr_scale_fns = {
     "linear": lambda x: x,
@@ -320,9 +321,19 @@ class GaussianModel:
                     self.col2attr[i] = 5
         
         elif self.args.gpu_cache == "xyzosr":
-            self.parameters_buffer = torch.empty((self.args.prealloc_capacity, 48), dtype=torch.float32, pin_memory=True)
-            self.parameters_grad_buffer = torch.zeros((self.args.prealloc_capacity, 48), dtype=torch.float32, pin_memory=True)
-            
+            # HACK: pytorch cachingHostAllocator automatically rounds up and does not expose a free-cache api.
+            # To avoid wasted system ram, we convert from numba pinned array as a workaround.
+            # (however, numba never frees the pinned memory as well, so we only allocate a big enough buffer once)
+
+            # self.parameters_buffer = torch.empty((self.args.prealloc_capacity, 48), dtype=torch.float32, pin_memory=True)
+            # self.parameters_grad_buffer = torch.zeros((self.args.prealloc_capacity, 48), dtype=torch.float32, pin_memory=True)
+            parameters_buffer_array = numba.cuda.pinned_array((self.args.prealloc_capacity, 48), dtype=np.float32)
+            self.parameters_buffer = torch.from_numpy(parameters_buffer_array)
+            parameters_grad_buffer_array = numba.cuda.pinned_array((self.args.prealloc_capacity, 48), dtype=np.float32)
+            self.parameters_grad_buffer = torch.from_numpy(parameters_grad_buffer_array)
+            assert self.parameters_buffer.is_pinned()
+            assert self.parameters_grad_buffer.is_pinned()
+
             fused_point_cloud = (torch.tensor(np.asarray(pcd.points)).float().to("cuda"))  # It is not contiguous
             fused_point_cloud = fused_point_cloud.contiguous()  # Now it's contiguous
             fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().to("cpu"))
