@@ -135,7 +135,8 @@ def pipeline_forward_one_step(
     scene,
     gaussians,
     background,
-    pipe_args
+    pipe_args,
+    eval=False,
 ):
     # print shape of all inputs
     # print("filtered_opacity_gpu shape: ", filtered_opacity_gpu.shape)
@@ -167,7 +168,8 @@ def pipeline_forward_one_step(
         )
     ) # (1, N), (1, N, 2), (1, N), (1, N, 3), (1, N)
 
-    batched_means2D.retain_grad() # this is only for training. 
+    if not eval:
+        batched_means2D.retain_grad() # this is only for training. 
 
     sh_degree = gaussians.active_sh_degree
     camtoworlds = camera.camtoworlds
@@ -4914,44 +4916,19 @@ def training_report(
                         #FIXME: quick workaround for verifying the correctness
                         camera.world_view_transform = camera.world_view_transform.cuda()
                         camera.full_proj_transform = camera.full_proj_transform.cuda()
+                        camera.K = camera.create_k_on_gpu()
+                        camera.camtoworlds = torch.inverse(camera.world_view_transform.transpose(0, 1)).unsqueeze(0)
 
                         if args.offload:
-                            if args.gpu_cache == "xyzosr":
-                                batched_screenspace_pkg = (
-                                    gsplat_distributed_preprocess3dgs_and_all2all_offloaded_cacheXYZOSR(
-                                        [camera],
-                                        scene.gaussians,
-                                        pipe_args,
-                                        background,
-                                        batched_strategies=[strategy],
-                                        mode="test",
-                                        offload=args.offload
-                                    )
-                                )
-                                images, _ = gsplat_render_final(
-                                    batched_screenspace_pkg, [strategy]
-                                )
-                                batched_image.append(images[0])
-                                del batched_screenspace_pkg
-                            elif args.gpu_cache == "no_cache":
-                                batched_screenspace_pkg = (
-                                    gsplat_distributed_preprocess3dgs_and_all2all_final(
-                                        [camera],
-                                        scene.gaussians,
-                                        pipe_args,
-                                        background,
-                                        batched_strategies=[strategy],
-                                        mode="test",
-                                        offload=offload,
-                                    )
-                                )
-                                images, _ = gsplat_render_final(
-                                    batched_screenspace_pkg, [strategy]
-                                )
-                                batched_image.append(images[0])
-                                del batched_screenspace_pkg
-                            else:
-                                raise ValueError("Invalid gpu cache strategy.")  
+                            assert args.gpu_cache == "xyzosr"
+                            assert args.backend == "gsplat"
+                            rendered_image = offload_eval_one_cam(
+                                camera=camera,
+                                gaussians=scene.gaussians,
+                                background=background,
+                                scene=scene
+                            )
+                            batched_image.append(rendered_image)
                         else:
                             if args.backend == "gsplat":
                                 batched_screenspace_pkg = (

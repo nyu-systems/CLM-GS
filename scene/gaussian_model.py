@@ -80,7 +80,7 @@ class GaussianModel:
         self.mxw_debug = args.mxw_debug
 
     def capture(self):
-        assert false, "optimizer not fixed yet"
+        assert False, "optimizer not fixed yet"
         return (
             self.active_sh_degree,
             self._xyz,
@@ -353,8 +353,8 @@ class GaussianModel:
             if subsample_ratio != 1.0:
                 assert subsample_ratio > 0 and subsample_ratio < 1
                 sub_N = int(N * subsample_ratio)
-                print("Downsample ratio: ", subsample_ratio)
-                print("Number of points after downsampling : ", sub_N)
+                print("Subsample ratio: ", subsample_ratio)
+                print("Number of points after subsampling : ", sub_N)
 
                 perm_generator = torch.Generator()
                 perm_generator.manual_seed(1)
@@ -1049,6 +1049,7 @@ class GaussianModel:
                 self._parameters = nn.Parameter(
                     self.parameters_buffer[:N].requires_grad_(True)
                 )
+                self._features_dc, self._features_rest = torch.split(self._parameters, [3, 45], dim=1) 
                 
                 self._xyz = nn.Parameter(
                     torch.tensor(
