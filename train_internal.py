@@ -3247,48 +3247,42 @@ def pipeline_offload_retention_optimized_v5_impl(
             
             zero_bitvec = torch.ones((n_gaussians,), dtype=torch.uint8, device="cuda")
             sum_vec = torch.empty((bsz, ), dtype=torch.int32, device="cuda")
-            one = torch.tensor(1, dtype=dtype, device="cuda")
             for i in range(bsz):
                 sum_vec[i] = len(filters[i])
             torch.cuda.nvtx.range_pop()
             
             torch.cuda.nvtx.range_push("init lists")
-            # not_touched_ids = torch.nonzero(torch.all(gs_bitmap == 0, dim=0)).flatten()
             cur_cam = min(enumerate(filters), key=lambda x: len(x[1]))[0] #  make the sparsest sample the last one
             ordered_cams = torch.empty((bsz,), dtype=torch.int32, device="cuda")
             ordered_cams[-1] = cur_cam
             # update_ls = [torch.nonzero(gs_bitmap[cur_cam, :]).flatten()]
-            update_ls = [torch.nonzero(one << (bsz-1-cur_cam) & gs_bitmap).flatten()]
-            cnt_h = torch.empty((bsz-1,), dtype=torch.int32, device="cuda")
-            cnt_d = torch.empty((bsz-1,), dtype=torch.int32, device="cuda")
-            cnt_g = torch.empty((bsz-1,), dtype=torch.int32, device="cuda")
+            update_ls = [torch.nonzero(gs_bitmap >> (bsz-1-cur_cam) & 1).flatten()]
             torch.cuda.nvtx.range_pop()
 
             torch.cuda.nvtx.range_push("order calculation loop + reverse")
+            tmp_vec = torch.empty((n_gaussians,), dtype=torch.uint8, device="cuda")
             for i in range(1, bsz):
                 cur_cam = ordered_cams[-i]
-                # col_to_reset = torch.nonzero(gs_bitmap[cur_cam] & zero_bitvec).flatten()
-                
-                # col_to_reset = next_update if i > 1 else torch.nonzero(gs_bitmap[cur_cam] & zero_bitvec).flatten()
-                col_to_reset = next_update if i > 1 else torch.nonzero((one << (bsz-1-cur_cam) & gs_bitmap) >> (bsz-1-cur_cam) & zero_bitvec).flatten()
+                if i > 1:
+                    col_to_reset = next_update
+                else:
+                    diff_gaussian_rasterization._C.map_bit_and_vec(gs_bitmap, zero_bitvec, bsz-1-cur_cam, tmp_vec)
+                    col_to_reset = next_update if i > 1 else torch.nonzero(tmp_vec).flatten()
                 zero_bitvec.scatter_(dim=0, index=col_to_reset, src=torch.zeros_like(col_to_reset, dtype=torch.uint8))
 
-                # TODO: a better way to calculate `reset_sum`?`
-                # col_to_reset = col_to_reset.expand(bsz, -1)
-                # reset_col_gathered = torch.gather(gs_bitmap, dim=1, index=col_to_reset)
-                # reset_sum = torch.sum(reset_col_gathered, dim=1) # (bsz,)
                 reset_col_gathered = torch.gather(gs_bitmap, dim=0, index=col_to_reset)
-                reset_sum = torch.zeros((bsz,), dtype=torch.int32, device="cuda")
-                for j in range(bsz):
-                    reset_sum[j] = torch.sum((one << (bsz-1-j) & reset_col_gathered) >> (bsz-1-j) & 1, dim=0)
+                reset_bitmap = torch.empty((bsz, len(col_to_reset)), dtype=torch.uint8, device="cuda")
+                diff_gaussian_rasterization._C.extract_reset_bitmap(reset_col_gathered, reset_bitmap)
+                reset_sum = torch.sum(reset_bitmap, dim=1)
                 sum_vec = sum_vec - reset_sum
                 sum_vec[ordered_cams[bsz-i:].squeeze()] = torch.iinfo(torch.int32).max
                 next_cam = torch.argmin(sum_vec)
                 ordered_cams[-i-1] = next_cam
-                # next_update = torch.nonzero(gs_bitmap[next_cam] & zero_bitvec).flatten()
-                next_update = torch.nonzero((one << (bsz-1-next_cam) & gs_bitmap) >> (bsz-1-next_cam) & zero_bitvec).flatten()
+
+                diff_gaussian_rasterization._C.map_bit_and_vec(gs_bitmap, zero_bitvec, bsz-1-next_cam, tmp_vec)
+                next_update = torch.nonzero(tmp_vec).flatten()
                 update_ls.append(next_update)
-            
+    
             col_to_reset = next_update
             zero_bitvec.scatter_(dim=0, index=col_to_reset, src=torch.zeros_like(col_to_reset, dtype=torch.uint8))
             not_touched_ids = torch.nonzero(zero_bitvec).flatten()
@@ -3303,18 +3297,19 @@ def pipeline_offload_retention_optimized_v5_impl(
             sparsity = [len(filters[i]) / float(n_gaussians) for i in range(bsz)]
 
             torch.cuda.nvtx.range_push("precompute sums")
-            next_bit = (one << bsz-1-ordered_cams[0] & gs_bitmap) >> (bsz-1-ordered_cams[0]) & 1
+            cnt_h = torch.empty((bsz-1,), dtype=torch.int, device="cuda")
+            cnt_d = torch.empty((bsz-1,), dtype=torch.int, device="cuda")
+            cnt_g = torch.empty((bsz-1,), dtype=torch.int, device="cuda")
+            hdg_vec = torch.empty((3, n_gaussians), dtype=torch.uint8, device="cuda")
             for i in range(bsz-1):
-                this_bit = next_bit
-                next_bit = (one << bsz-1-ordered_cams[i+1] & gs_bitmap) >> (bsz-1-ordered_cams[i+1]) & 1
-                cnt_h[i] = torch.sum(~this_bit & next_bit)
-                cnt_d[i] = torch.sum(this_bit & next_bit)
-                cnt_g[i] = torch.sum(this_bit & ~next_bit)
-                assert cnt_h[i] >= 0
-                assert cnt_d[i] >= 0
-                assert cnt_g[i] >= 0, f"i={i}, {cnt_g[i]}"
+                diff_gaussian_rasterization._C.generate_hdg(gs_bitmap, bsz-1-ordered_cams[i], bsz-1-ordered_cams[i+1], hdg_vec)
+                cnt_hdg = torch.sum(hdg_vec, dim=1)
+                cnt_h[i] = cnt_hdg[0]
+                cnt_d[i] = cnt_hdg[1]
+                cnt_g[i] = cnt_hdg[2]
+
             torch.cuda.nvtx.range_pop()
-            del gs_bitmap
+            del gs_bitmap, hdg_vec
 
             torch.cuda.nvtx.range_push("transfer cpuadam update list and sums to cpu")
             data2cpu_ls = update_ls + [cnt_h, cnt_d, cnt_g]
@@ -3328,7 +3323,6 @@ def pipeline_offload_retention_optimized_v5_impl(
             cnt_h = data2cpu_ls_h[-3]
             cnt_d = data2cpu_ls_h[-2]
             cnt_g = data2cpu_ls_h[-1]
-
             torch.cuda.nvtx.range_pop()
 
             finish_indices_filters = update_ls_cpu
