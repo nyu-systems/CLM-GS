@@ -165,14 +165,13 @@ class GaussianModel:
         self.spatial_lr_scale = spatial_lr_scale
 
         fused_point_cloud = (
-            torch.tensor(np.asarray(pcd.points)).float().to("cuda")
+            torch.tensor(np.asarray(pcd.points)).float()
         )  # It is not contiguous
         fused_point_cloud = fused_point_cloud.contiguous()  # Now it's contiguous
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().to("cuda"))
+        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float())
         features = (
             torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2))
             .float()
-            .to("cuda")
         )
         features[:, :3, 0] = fused_color
         features[:, 3:, 1:] = 0.0
@@ -181,10 +180,10 @@ class GaussianModel:
         print("Number of points before initialization : ", N)
 
         dist2 = torch.clamp_min(
-            distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
+            distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float()),
             0.0000001,
         )
-        scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3).to("cuda")
+        scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
 
         if subsample_ratio != 1.0:
             assert subsample_ratio > 0 and subsample_ratio < 1
@@ -199,6 +198,10 @@ class GaussianModel:
             features = features[subsampled_set_gpu]
             scales = scales[subsampled_set_gpu]
             N = sub_N           
+
+        fused_point_cloud = fused_point_cloud.to("cuda")
+        features = features.to("cuda")
+        scales = scales.to("cuda")
 
         rots = torch.zeros((N, 4), device="cuda")
         rots[:, 0] = 1
@@ -267,10 +270,76 @@ class GaussianModel:
         
         self.parameters_buffer = torch.empty(0)
         self.parameters_grad_buffer = torch.empty(0)
+
+        if self.args.braindeath_offload:
+            fused_point_cloud = (
+                torch.tensor(np.asarray(pcd.points)).float()
+            )  # It is not contiguous
+            fused_point_cloud = fused_point_cloud.contiguous()  # Now it's contiguous
+            fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float())
+            features = (
+                torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2))
+                .float()
+            )
+            features[:, :3, 0] = fused_color
+            features[:, 3:, 1:] = 0.0
+
+            N = fused_point_cloud.shape[0]
+            print("Number of points before initialization : ", N)
+
+            dist2 = torch.clamp_min(
+                distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float()),
+                0.0000001,
+            )
+            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
+
+            if subsample_ratio != 1.0:
+                assert subsample_ratio > 0 and subsample_ratio < 1
+                sub_N = int(N * subsample_ratio)
+                print("Downsample ratio: ", subsample_ratio)
+                print("Number of points after downsampling : ", sub_N)
+
+                perm_generator = torch.Generator()
+                perm_generator.manual_seed(1)
+                subsampled_set_gpu, _ = torch.randperm(N)[:sub_N].sort()
+                fused_point_cloud = fused_point_cloud[subsampled_set_gpu]
+                features = features[subsampled_set_gpu]
+                scales = scales[subsampled_set_gpu]
+                N = sub_N           
+
+            rots = torch.zeros((N, 4))
+            rots[:, 0] = 1
+
+            opacities = inverse_sigmoid(
+                0.1
+                * torch.ones(
+                    (N, 1), dtype=torch.float
+                )
+            )
+
+            self._xyz = nn.Parameter(fused_point_cloud.pin_memory().requires_grad_(True))
+            self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().pin_memory().requires_grad_(True))
+            self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().pin_memory().requires_grad_(True))
+            self._scaling = nn.Parameter(scales.pin_memory().requires_grad_(True))
+            self._rotation = nn.Parameter(rots.pin_memory().requires_grad_(True))
+            self._opacity = nn.Parameter(opacities.pin_memory().requires_grad_(True))
+            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+            self.sum_visible_count_in_one_batch = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+            # self._xyz.grad = torch.empty_like(self._xyz, pin_memory=True)
+            # self._features_dc.grad = torch.empty_like(self._features_dc, pin_memory=True)
+            # self._features_rest.grad = torch.empty_like(self._features_rest, pin_memory=True)
+            # self._scaling.grad = torch.empty_like(self._scaling, pin_memory=True)
+            # self._rotation.grad = torch.empty_like(self._rotation, pin_memory=True)
+            # self._opacity.grad = torch.empty_like(self._opacity, pin_memory=True)  
         
-        if self.args.gpu_cache == "no_cache":
-            self.parameters_buffer = torch.empty((self.args.prealloc_capacity, 59), dtype=torch.float32, pin_memory=True)
-            self.parameters_grad_buffer = torch.zeros((self.args.prealloc_capacity, 59), dtype=torch.float32, pin_memory=True)
+        elif self.args.gpu_cache == "no_cache":
+            parameters_buffer_array = numba.cuda.pinned_array((self.args.prealloc_capacity, 59), dtype=np.float32)
+            self.parameters_buffer = torch.from_numpy(parameters_buffer_array)
+            parameters_grad_buffer_array = numba.cuda.pinned_array((self.args.prealloc_capacity, 59), dtype=np.float32)
+            self.parameters_grad_buffer = torch.from_numpy(parameters_grad_buffer_array)
+            assert self.parameters_buffer.is_pinned()
+            assert self.parameters_grad_buffer.is_pinned()
             
             fused_point_cloud = (torch.tensor(np.asarray(pcd.points)).float().to("cpu"))  # It is not contiguous
             fused_point_cloud = fused_point_cloud.contiguous()  # Now it's contiguous
@@ -436,7 +505,43 @@ class GaussianModel:
         
         # Setup the optimizer
         if args.offload:
-            if args.gpu_cache == "no_cache":
+            if args.braindeath_offload:
+                l = [
+                    {
+                        "params": [self._xyz],
+                        "lr": training_args.position_lr_init
+                        * self.spatial_lr_scale
+                        * args.lr_scale_pos_and_scale,
+                        "name": "xyz",
+                    },
+                    {
+                        "params": [self._features_dc],
+                        "lr": training_args.feature_lr,
+                        "name": "f_dc",
+                    },
+                    {
+                        "params": [self._features_rest],
+                        "lr": training_args.feature_lr / 20.0,
+                        "name": "f_rest",
+                    },
+                    {
+                        "params": [self._opacity],
+                        "lr": training_args.opacity_lr,
+                        "name": "opacity",
+                    },
+                    {
+                        "params": [self._scaling],
+                        "lr": training_args.scaling_lr * args.lr_scale_pos_and_scale,
+                        "name": "scaling",
+                    },
+                    {
+                        "params": [self._rotation],
+                        "lr": training_args.rotation_lr,
+                        "name": "rotation",
+                    },
+                ]
+                self.optimizer = cpu_adam.CPUAdam(l, lr=0.0, eps=1e-15)
+            elif args.gpu_cache == "no_cache":
                 l = [
                     {
                         "params": [self._parameters],
@@ -517,7 +622,8 @@ class GaussianModel:
                     amsgrad=False,
                     adamw_mode=False,
                     fp32_optimizer_states=True,
-                    fused=True if args.fused_adam == "torch_fused" else False
+                    fused=True if args.fused_adam == "torch_fused" else False,
+                    sparse=self.args.sparse_adam,
                 )
                 
             else:
@@ -559,7 +665,7 @@ class GaussianModel:
                 },
             ]
             if args.sparse_adam:
-                self.optimizer = SelectiveAdam(l, lr=0.0, eps=1e-15)
+                self.optimizer = SelectiveAdam(l, eps=1e-15, betas=(0.9, 0.999))
             else:
                 self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15, fused=True if args.fused_adam == "torch_fused" else False)
 
@@ -589,7 +695,7 @@ class GaussianModel:
                     False
                 ), f"lr_scale_mode {training_args.lr_scale_mode} not supported."
         
-        if args.offload:
+        if args.offload and not args.braindeath_offload:
             if training_args.lr_scale_mode == "linear":
                 lr_scale = bsz
                 self.optimizer.columns_lr *= lr_scale
@@ -1002,7 +1108,38 @@ class GaussianModel:
         
         N = catted_xyz.shape[0]
 
-        if self.args.offload:
+        if self.args.braindeath_offload:
+            self._xyz = nn.Parameter(
+                torch.tensor(catted_xyz, dtype=torch.float, device="cpu").pin_memory().requires_grad_(True)
+            )
+            self._features_dc = nn.Parameter(
+                torch.tensor(catted_features_dc, dtype=torch.float, device="cpu")
+                .transpose(1, 2)
+                .contiguous()
+                .pin_memory()
+                .requires_grad_(True)
+            )
+            self._features_rest = nn.Parameter(
+                torch.tensor(catted_features_rest, dtype=torch.float, device="cpu")
+                .transpose(1, 2)
+                .contiguous()
+                .pin_memory()
+                .requires_grad_(True)
+            )
+            self._opacity = nn.Parameter(
+                torch.tensor(catted_opacity, dtype=torch.float, device="cpu").pin_memory().requires_grad_(True)
+            )
+            self._scaling = nn.Parameter(
+                torch.tensor(catted_scaling, dtype=torch.float, device="cpu").pin_memory().requires_grad_(True)
+            )
+            self._rotation = nn.Parameter(
+                torch.tensor(catted_rotation, dtype=torch.float, device="cpu").pin_memory().requires_grad_(True)
+            )
+            self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cpu")
+
+            self.active_sh_degree = self.max_sh_degree
+
+        elif self.args.offload:
             self.parameters_buffer = torch.empty(0)
             self.parameters_grad_buffer = torch.zeros(0)
         
@@ -2034,6 +2171,17 @@ class GaussianModel:
             grad[update_filter, :2], dim=-1, keepdim=True
         )
         self.denom[send2gpu_visibility_filter] += 1
+    
+    def packed_add_densification_stats(
+        self, viewspace_point_tensor_grad, visibility, width, height
+    ):
+        grad = viewspace_point_tensor_grad
+        grad[:, 0] *= width * 0.5
+        grad[:, 1] *= height * 0.5
+        self.xyz_gradient_accum[visibility] += torch.norm(
+            grad[:, :2], dim=-1, keepdim=True
+        )
+        self.denom[visibility] += 1
 
     def gsplat_add_densification_stats_exact_filter(
         self, viewspace_point_tensor_grad, send2gpu_final_filter_indices, width, height

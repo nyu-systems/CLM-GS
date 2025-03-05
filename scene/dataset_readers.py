@@ -265,91 +265,121 @@ def readCamerasFromTransformsCity(
     undistorted=False,
     is_debug=False,
 ):
+    args = utils.get_args()
     cam_infos = []
     if undistorted:
         print("Undistortion the images!!!")
         # TODO: Support undistortion here. Please refer to octree-gs implementation.
-    with open(os.path.join(path, transformsfile)) as json_file:
-        contents = json.load(json_file)
-        try:
-            fovx = contents["camera_angle_x"]
-        except:
-            fovx = None
 
-        frames = contents["frames"]
-        # check if filename already contain postfix
-        if frames[0]["file_path"].split(".")[-1] in ["jpg", "jpeg", "JPG", "png"]:
-            extension = ""
+    if args.matrixcity_ocean_mask:
+        transforms_ocean_json_path = os.path.join(path, transformsfile.replace(".json", "_ocean_info.json"))
 
-        c2ws = np.array([frame["transform_matrix"] for frame in frames])
+        print(f"Loading ocean info from {transforms_ocean_json_path}")
+        with open(transforms_ocean_json_path, "r") as ocean_json_file:
+            transforms_ocean = json.load(ocean_json_file)
 
-        Ts = c2ws[:, :3, 3]
+        print(f"Loading original transforms from {os.path.join(path, transformsfile)}")
+        with open(os.path.join(path, transformsfile)) as json_file:
+            transforms = json.load(json_file)
+        
+        transforms_frames = transforms["frames"]
+        transforms_ocean_frames = transforms_ocean["frames"]
+        assert len(transforms_frames) == len(transforms_ocean_frames), "Ocean info does not match the original frames"
 
-        ct = 0
+        new_frames = []
+        for i in range(len(transforms_frames)):
+            # assert transforms_frames[i]["file_path"] suffix is transforms_ocean_frames[i]["file_name"]
+            assert transforms_frames[i]["file_path"][-len(transforms_ocean_frames[i]["file_name"]):] == transforms_ocean_frames[i]["file_name"], f"Ocean info does not match the original frames at index {i}. Filename: {transforms_frames[i]['file_path']} vs {transforms_ocean_frames[i]['file_name']}"
+            if not transforms_ocean_frames[i]["is_ocean"]:
+                new_frames.append(transforms_frames[i])
+        transforms["frames"] = new_frames
+    
+    else:
+        with open(os.path.join(path, transformsfile)) as json_file:
+            transforms = json.load(json_file)
 
-        progress_bar = tqdm(frames, desc="Loading dataset")
 
-        for idx, frame in enumerate(frames):
-            # cam_name = os.path.join(path, frame["file_path"] + extension)
-            cam_name = frame["file_path"]
-            if not os.path.exists(cam_name):
-                print(f"File {cam_name} not found, skipping...")
-                continue
-            # NeRF 'transform_matrix' is a camera-to-world transform
-            c2w = np.array(frame["transform_matrix"])
+    # contents = json.load(json_file)
+    try:
+        fovx = transforms["camera_angle_x"]
+    except:
+        fovx = None
 
-            if idx % 10 == 0:
-                progress_bar.set_postfix({"num": f"{ct}/{len(frames)}"})
-                progress_bar.update(10)
-            if idx == len(frames) - 1:
-                progress_bar.close()
+    frames = transforms["frames"]
+    # check if filename already contain postfix
+    if frames[0]["file_path"].split(".")[-1] in ["jpg", "jpeg", "JPG", "png"]:
+        extension = ""
 
-            ct += 1
-            # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
-            c2w[:3, 1:3] *= -1
+    c2ws = np.array([frame["transform_matrix"] for frame in frames])
 
-            # get the world-to-camera transform and set R, T
-            w2c = np.linalg.inv(c2w)
+    Ts = c2ws[:, :3, 3]
 
-            R = np.transpose(
-                w2c[:3, :3]
-            )  # R is stored transposed due to 'glm' in CUDA code
-            T = w2c[:3, 3]
+    ct = 0
 
-            image_path = os.path.join(path, cam_name)
-            image_name = cam_name[-17:]  # Path(cam_name).stem
-            image = Image.open(image_path)
+    progress_bar = tqdm(frames, desc="Loading dataset")
 
-            if fovx is not None:
-                fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-                FovY = fovy
-                FovX = fovx
-            else:
-                # given focal in pixel unit
-                FovY = focal2fov(frame["fl_y"], image.size[1])
-                FovX = focal2fov(frame["fl_x"], image.size[0])
+    for idx, frame in enumerate(frames):
+        # cam_name = os.path.join(path, frame["file_path"] + extension)
+        cam_name = frame["file_path"]
+        if not os.path.exists(cam_name):
+            print(f"File {cam_name} not found, skipping...")
+            continue
+        # NeRF 'transform_matrix' is a camera-to-world transform
+        c2w = np.array(frame["transform_matrix"])
 
-            cam_infos.append(
-                CameraInfo(
-                    uid=idx,
-                    R=R,
-                    T=T,
-                    FovY=FovY,
-                    FovX=FovX,
-                    image=None,
-                    image_path=image_path,
-                    image_name=image_name,
-                    width=image.size[0],
-                    height=image.size[1],
-                )
+        if idx % 10 == 0:
+            progress_bar.set_postfix({"num": f"{ct}/{len(frames)}"})
+            progress_bar.update(10)
+        if idx == len(frames) - 1:
+            progress_bar.close()
+
+        ct += 1
+        # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
+        c2w[:3, 1:3] *= -1
+
+        # get the world-to-camera transform and set R, T
+        w2c = np.linalg.inv(c2w)
+
+        R = np.transpose(
+            w2c[:3, :3]
+        )  # R is stored transposed due to 'glm' in CUDA code
+        T = w2c[:3, 3]
+
+        image_path = os.path.join(path, cam_name)
+        image_name = cam_name[-17:]  # Path(cam_name).stem
+        image = Image.open(image_path)
+
+        if fovx is not None:
+            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
+            FovY = fovy
+            FovX = fovx
+        else:
+            # given focal in pixel unit
+            FovY = focal2fov(frame["fl_y"], image.size[1])
+            FovX = focal2fov(frame["fl_x"], image.size[0])
+
+        cam_infos.append(
+            CameraInfo(
+                uid=idx,
+                R=R,
+                T=T,
+                FovY=FovY,
+                FovX=FovX,
+                image=None,
+                image_path=image_path,
+                image_name=image_name,
+                width=image.size[0],
+                height=image.size[1],
             )
+        )
 
-            # release memory
-            image.close()
-            image = None
+        # release memory
+        image.close()
+        image = None
 
-            if is_debug and idx > 50:
-                break
+        if is_debug and idx > 50:
+            break
+    
     return cam_infos
 
 
@@ -465,6 +495,7 @@ def readCityInfo(
     llffhold=8,
     undistorted=False,
 ):
+    args = utils.get_args()
 
     train_json_path = os.path.join(path, f"transforms_train.json")
     test_json_path = os.path.join(path, f"transforms_test.json")

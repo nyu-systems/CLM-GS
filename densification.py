@@ -253,8 +253,8 @@ def update_densification_stats_pipelineoffload_xyzosr(
     log_file = utils.get_log_file()
 
     assert args.offload
-    assert args.pipelined_offload
-    assert args.gpu_cache == "xyzosr"
+    # assert args.pipelined_offload
+    # assert args.gpu_cache == "xyzosr"
     assert radii.shape[0] == send2gpu_final_filter_indices.shape[0], f"radii.shape[0]={radii.shape[0]}, send2gpu_final_filter_indices.shape[0]={send2gpu_final_filter_indices.shape[0]}"
     assert send2gpu_final_filter_indices.shape[0] == means2d_grad.shape[0], f"send2gpu_final_filter_indices.shape[0]={send2gpu_final_filter_indices.shape[0]}, means2d_grad.shape[0]={means2d_grad.shape[0]}"
 
@@ -291,13 +291,14 @@ def update_densification_stats_baseline_accumGrads(
     image_width,
     means2d_grad,
     radii,
+    visibility,
 ):
     iteration = utils.get_cur_iter()
     args = utils.get_args()
     timers = utils.get_timers()
     log_file = utils.get_log_file()
 
-    assert not args.offload
+    # assert not args.offload
     # assert radii.shape[0] == send2gpu_final_filter_indices.shape[0], f"radii.shape[0]={radii.shape[0]}, send2gpu_final_filter_indices.shape[0]={send2gpu_final_filter_indices.shape[0]}"
     # assert send2gpu_final_filter_indices.shape[0] == means2d_grad.shape[0], f"send2gpu_final_filter_indices.shape[0]={send2gpu_final_filter_indices.shape[0]}, means2d_grad.shape[0]={means2d_grad.shape[0]}"
 
@@ -307,17 +308,29 @@ def update_densification_stats_baseline_accumGrads(
         # timers.start("densification")
 
         # timers.start("densification_update_stats")
-        radii = radii.squeeze(0)
-        visibility_filter = radii > 0
+        if args.packed:
+            radii = radii.squeeze(0)
 
-        gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-        gaussians.gsplat_add_densification_stats(
-            means2d_grad.squeeze(0),
-            visibility_filter,
-            visibility_filter,
-            image_width,
-            image_height,
-        )           
+            gaussians.max_radii2D[visibility] = torch.max(gaussians.max_radii2D[visibility], radii)
+            gaussians.packed_add_densification_stats(
+                means2d_grad,
+                visibility,
+                image_width,
+                image_height,
+            )       
+
+        else:
+            radii = radii.squeeze(0)
+            visibility_filter = radii > 0
+
+            gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+            gaussians.gsplat_add_densification_stats(
+                means2d_grad.squeeze(0),
+                visibility_filter,
+                visibility_filter,
+                image_width,
+                image_height,
+            )           
         # timers.stop("densification_update_stats")
 
         # timers.stop("densification")

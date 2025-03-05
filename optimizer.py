@@ -119,7 +119,7 @@ class UnifiedAdam(torch.optim.Optimizer):
                 params_device.append(p)
 
         if sparse:
-            self.gpu_adam = SelectiveAdam(params_device, lr=0.0, eps=eps)
+            self.gpu_adam = SelectiveAdam(params_device, eps=eps, betas=betas)
         else:
             self.gpu_adam = torch.optim.Adam(params_device, lr=0.0, eps=eps, fused=fused)
         self.cpu_adam = cpu_adam.FusedCPUAdam(

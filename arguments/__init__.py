@@ -79,6 +79,7 @@ class AuxiliaryParams(ParamGroup):
         self.backend = "default" # "default", "gsplat"
         self.offload = False
         self.pipelined_offload = False
+        self.braindeath_offload = False
         self.grid_size_H = 32
         self.grid_size_D = 32
         self.prealloc_capacity = 5_000_000
@@ -96,6 +97,9 @@ class AuxiliaryParams(ParamGroup):
         self.dense_ply_file = ""
         self.fused_adam = "default"
         self.sparse_adam = False
+        self.matrixcity_ocean_mask = False
+        self.packed = False
+        self.pipeline_mode = "final"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args): 
@@ -237,7 +241,7 @@ class DebugParams(ParamGroup):
         self.comm_stream_priority = 0
         self.overlap_cpuadam = False
         self.overlap_cpuadam_version = 0
-        self.order_calculation_version = 1
+        self.order_calculation_version = -1
         self.retention = 0
         self.log_sampled_filters = 0
         self.subsample_ratio = 1.0

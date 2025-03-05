@@ -144,11 +144,11 @@ class Scene:
         if args.decode_dataset_to_disk:
             # Predecode dataset as raw files to local disk
             statvfs = os.statvfs(args.decode_dataset_path)
-            available_space_in_GB = 1.0 * statvfs.f_frsize * statvfs.f_bavail / 1e9
-            assert available_space_in_GB >= dataset_size_in_GB, f"Not enough space in disk for decompressed dataset. avail: {available_space_in_GB}. need: {dataset_size_in_GB}"
             self.decode_dataset_path = os.path.join(args.decode_dataset_path, "dataset_raw")
             
             if (not args.reuse_decoded_dataset) or (not os.path.isdir(os.path.join(args.decode_dataset_path, 'dataset_raw'))):
+                available_space_in_GB = 1.0 * statvfs.f_frsize * statvfs.f_bavail / 1e9
+                assert available_space_in_GB >= dataset_size_in_GB, f"Not enough space in disk for decompressed dataset. avail: {available_space_in_GB}. need: {dataset_size_in_GB}"
                 log_file.write(f"[NOTE]: Pre-decoding dataset({dataset_size_in_GB}GB) to disk dir: {self.decode_dataset_path}\n")
                 os.makedirs(os.path.join(self.decode_dataset_path, "dataset_raw"), exist_ok=True)
                 do_decode = True
