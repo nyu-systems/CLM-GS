@@ -15,3 +15,6 @@
 [submodule "submodules/fuse-ssim"]
 	path = submodules/fuse-ssim
 	url = git@github.com:TarzanZhao/fuse-ssim.git
+[submodule "submodules/fast-tsp"]
+	path = submodules/fast-tsp
+	url = git@github.com:TarzanZhao/fast-tsp.git
