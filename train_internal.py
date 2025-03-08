@@ -3496,6 +3496,113 @@ def pipeline_offload_retention_optimized_v5_impl(
                 return finish_indices_filters, batched_cameras, filters, sparsity, ordered_cams, cnt_h, cnt_d, cnt_g, visibility_mask
 
             finish_indices_filters, batched_cameras, filters, sparsity, ordered_cams, cnt_h, cnt_d, cnt_g, visibility_mask = order_cal_6(filters, batched_cameras)
+
+        elif order_calculation_version == 7:
+            match bsz:
+                case 4 | 8:
+                    dtype = torch.int8
+                case 16:
+                    dtype = torch.int16
+                case 32:
+                    dtype = torch.int32
+                case 64:
+                    dtype = torch.int64
+                case _:
+                    raise ValueError("Currently supported bsz: (4, 8, 16, 32, 64).")
+
+            def order_cal_7(filters, batched_cameras):
+                torch.cuda.nvtx.range_push("init bitmap and vecs")
+                gs_bitmap = torch.zeros((n_gaussians), dtype=dtype, device="cuda")
+                # Encode bitmap: MSB->first microbatch; LSB->last microbatch
+                for i, f in enumerate(filters):
+                    diff_gaussian_rasterization._C.scatter_to_bit(gs_bitmap, f, bsz-1-i)
+    
+                torch.cuda.nvtx.range_pop()
+
+                torch.cuda.nvtx.range_push("generate distance matrix")
+                # Downsample.
+                if bsz >= 32:
+                    n_sampled = n_gaussians // bsz**2
+                else:
+                    n_sampled = n_gaussians // 32
+                sampled_gaussian_ids = torch.randperm(n_gaussians, generator=perm_generator, device="cuda")[:n_sampled]
+                sampled_bitmap = torch.gather(input=gs_bitmap, dim=0, index=sampled_gaussian_ids)
+                # Unzip the bimap.
+                unziped = torch.empty((bsz, n_sampled), dtype=torch.uint8, device="cuda")
+                for i in range(bsz):
+                    unziped[i] = (sampled_bitmap & 1).to(torch.uint8)
+                    sampled_bitmap >> 1
+                # Compute distance matrix. FIXME: need a better way with less memory
+                distance_matrix = (unziped.unsqueeze(1) ^ unziped.unsqueeze(0)).sum(dim=-1).tolist() # intermediate result: (bsz, bsz, n_sampled) = n_gaussians
+                torch.cuda.nvtx.range_pop()
+
+                torch.cuda.nvtx.range_push("solve order: tsp")
+                ordered_cams = fast_tsp.find_tour(distance_matrix, 0.001)
+                torch.cuda.nvtx.range_pop()
+                batched_cameras = [batched_cameras[i] for i in ordered_cams]
+                filters = [filters[i] for i in ordered_cams]
+                sparsity = [len(filters[i]) / float(n_gaussians) for i in range(bsz)]
+
+                torch.cuda.nvtx.range_push("generate cpuadam update ls")
+                # Re-encode the bitmap based on given order
+                gs_bitmap.zero_()
+                for i, f in enumerate(filters):
+                    diff_gaussian_rasterization._C.scatter_to_bit(gs_bitmap, f, bsz-1-i)
+
+                ffs = torch.empty(n_gaussians, dtype=torch.uint8, device="cuda")
+                diff_gaussian_rasterization._C.extract_ffs(gs_bitmap, ffs)
+                sorted_ffs, indices = torch.sort(ffs)
+                elems, counts = torch.unique_consecutive(sorted_ffs, return_counts=True)
+                update_ls = torch.split(indices, counts.tolist(), dim=0)
+                update_ls = list(update_ls)
+                for i in range(bsz + 1):
+                    if i not in elems: # check if there is empty update
+                        update_ls.insert(i, torch.tensor([], device="cuda"))
+                update_ls = [update_ls[0]] + update_ls[:0:-1]
+
+                if args.sparse_adam:
+                    not_touched_ids = update_ls[0]
+                    src = torch.zeros((len(not_touched_ids),), dtype=torch.bool, device="cuda")
+                    visibility_mask = torch.ones((n_gaussians,), dtype=torch.bool, device="cuda").scatter_(dim=0, index=not_touched_ids, src=src)
+                else:
+                    visibility_mask = None
+                torch.cuda.nvtx.range_pop()
+
+                # HACK: Testing bsz=32/64 for now
+                torch.cuda.nvtx.range_push("precompute sums")
+                ps_grid_size, ps_blk_size = (64, 256)
+                tmp_buffer = torch.empty((bsz-1, ps_grid_size * ps_blk_size), dtype=torch.int, device="cuda") # 31 * #t
+                diff_gaussian_rasterization._C.compute_cnt_h(gs_bitmap, tmp_buffer, ps_grid_size, ps_blk_size)
+                cnt_d = torch.sum(tmp_buffer, dim=1).flatten()
+                filter_len = torch.tensor([len(f) for f in filters], device="cuda")
+                cnt_h = filter_len[1:] - cnt_d
+                cnt_g = filter_len[:-1] - cnt_d
+
+                torch.cuda.nvtx.range_pop()
+                del gs_bitmap, tmp_buffer, filter_len
+
+                torch.cuda.nvtx.range_push("transfer cpuadam update list and sums to cpu")
+                data2cpu_ls = update_ls + [cnt_h, cnt_d, cnt_g]
+                cat_data2cpu = torch.cat(data2cpu_ls, dim=0).to(torch.int32)
+                cat_data2cpu_h = torch.empty_like(cat_data2cpu, device="cpu", pin_memory=True)
+                data2cpu_dim = [len(d) for d in data2cpu_ls]
+                cat_data2cpu_h.copy_(cat_data2cpu)
+                data2cpu_ls_h = torch.split(cat_data2cpu_h, data2cpu_dim, dim=0)
+                assert len(data2cpu_ls_h) == bsz + 4
+                update_ls_cpu = data2cpu_ls_h[:bsz+1]
+                cnt_h = data2cpu_ls_h[-3]
+                cnt_d = data2cpu_ls_h[-2]
+                cnt_g = data2cpu_ls_h[-1]
+                torch.cuda.nvtx.range_pop()
+
+                finish_indices_filters = update_ls_cpu
+
+                assert len(finish_indices_filters) == bsz + 1, "len(finish_indices_filters) should be equal to bsz + 1"
+                assert sum([len(indicies) for indicies in finish_indices_filters]) == n_gaussians, f"{sum([len(indicies) for indicies in finish_indices_filters])}, {n_gaussians}"
+
+                return finish_indices_filters, batched_cameras, filters, sparsity, ordered_cams, cnt_h, cnt_d, cnt_g, visibility_mask
+
+            finish_indices_filters, batched_cameras, filters, sparsity, ordered_cams, cnt_h, cnt_d, cnt_g, visibility_mask = order_cal_7(filters, batched_cameras)
             
         else:
             raise ValueError("Invalid order calculation version.")
