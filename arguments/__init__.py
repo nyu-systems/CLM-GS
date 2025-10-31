@@ -251,7 +251,6 @@ class DebugParams(ParamGroup):
         self.overlap_cpuadam_version = 0
         self.order_calculation_version = -1
         self.retention = 0
-        self.log_sampled_filters = 0
         self.subsample_ratio = 1.0
         self.upsample_ratio = 0.0
         self.reinit_ply = False
