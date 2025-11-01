@@ -1,10 +1,6 @@
 [submodule "submodules/simple-knn"]
 	path = submodules/simple-knn
 	url = git@github.com:TarzanZhao/simple-knn.git
-[submodule "submodules/diff-gaussian-rasterization"]
-	path = submodules/diff-gaussian-rasterization
-	url = git@github.com:nyu-systems/diff-gaussian-rasterization.git
-    branch = xiwen
 [submodule "submodules/gsplat"]
 	path = submodules/gsplat
 	url = git@github.com:alexis-mmm/gsplat.git

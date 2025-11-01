@@ -1217,20 +1217,6 @@ def pipeline_forward_one_step( # FIXME: why there are two pipeline_forward_one_s
         isect_ids, B, tile_width, tile_height
     )  # (B, tile_height, tile_width)
 
-    # no need for now
-    # global max_num_intersection
-    # num_intersection = isect_ids.shape[0]
-    # max_num_intersection = max(max_num_intersection, num_intersection)    
-    # args = utils.get_args()
-    # iteration = utils.get_cur_iter()
-    # log_file = utils.get_log_file()
-    # if (iteration % args.log_interval) == 1:
-    #     log_file.write(
-    #         "<<< # iteration: {}, # intersections = {}, max # intersections = {} >>>\n".format(iteration, num_intersection, max_num_intersection)
-    #     )
-
-    # TODO: One way to do load balancing: Add two timer operators before and after `rasterize_to_pixels`
-    # record_time_start : torch operator(torch.autograd.func)
 
     # Rasterize to pixels. batched_rendered_image: (B, image_height, image_width, 3)
     backgrounds = (
