@@ -10,12 +10,7 @@ class Timer:
         if args.enable_timer:
             # Enable time measure evaluated on python side.
             self.file = open(
-                args.log_folder
-                + "/python_time_ws="
-                + str(utils.WORLD_SIZE)
-                + "_rk="
-                + str(utils.GLOBAL_RANK)
-                + ".log",
+                args.log_folder + "/python_time.log",
                 "w",
             )
         else:

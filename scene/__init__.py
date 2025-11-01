@@ -132,13 +132,12 @@ class Scene:
             dataset_size_in_GB < args.preload_dataset_to_gpu_threshold
         ):  # 10GB memory limit for dataset
             log_file.write(
-                f"[NOTE]: Preloading dataset({dataset_size_in_GB}GB) to GPU. Disable local_sampling and distributed_dataset_storage.\n"
+                f"[NOTE]: Preloading dataset({dataset_size_in_GB}GB) to GPU. Disable distributed_dataset_storage.\n"
             )
             print(
-                f"[NOTE]: Preloading dataset({dataset_size_in_GB}GB) to GPU. Disable local_sampling and distributed_dataset_storage."
+                f"[NOTE]: Preloading dataset({dataset_size_in_GB}GB) to GPU. Disable distributed_dataset_storage."
             )
             args.preload_dataset_to_gpu = True
-            args.local_sampling = False  # TODO: Preloading dataset to GPU is not compatible with local_sampling and distributed_dataset_storage for now. Fix this.
             args.distributed_dataset_storage = False
 
         if args.decode_dataset_to_disk:
@@ -323,11 +322,6 @@ class SceneDataset:
         self.cameras = cameras
         self.cameras_info = cameras_info
         self.camera_size = len(self.cameras) if self.cameras is not None else len(self.cameras_info)
-        self.sample_camera_idx = []
-        # for i in range(self.camera_size):
-        #     if self.cameras[i].original_image_backup is not None:
-        #         self.sample_camera_idx.append(i)
-        # print("Number of cameras with sample images: ", len(self.sample_camera_idx))
 
         self.cur_epoch_cameras = []
         self.cur_iteration = 0
@@ -354,10 +348,7 @@ class SceneDataset:
         args = utils.get_args()
         if len(self.cur_epoch_cameras) == 0:
             # start a new epoch
-            if args.local_sampling:
-                self.cur_epoch_cameras = self.sample_camera_idx.copy()
-            else:
-                self.cur_epoch_cameras = list(range(self.camera_size))
+            self.cur_epoch_cameras = list(range(self.camera_size))
             random.shuffle(self.cur_epoch_cameras)
 
         self.cur_iteration += 1
@@ -427,11 +418,6 @@ class TorchSceneDataset(Dataset):
         self.cameras = cameras
         self.cameras_info = cameras_info
         self.camera_size = len(self.cameras) if self.cameras is not None else len(self.cameras_info)
-        self.sample_camera_idx = []
-        # for i in range(self.camera_size):
-        #     if self.cameras[i].original_image_backup is not None:
-        #         self.sample_camera_idx.append(i)
-        # print("Number of cameras with sample images: ", len(self.sample_camera_idx))
 
         self.cur_epoch_cameras = []
         self.cur_iteration = 0

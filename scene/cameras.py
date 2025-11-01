@@ -64,28 +64,13 @@ class Camera(nn.Module):
         if args.time_image_loading:
             start_time = time.time()
 
-        if (
-            (
-                args.local_sampling
-                and args.distributed_dataset_storage
-                and utils.GLOBAL_RANK == uid % utils.WORLD_SIZE
-            )
-            or (
-                not args.local_sampling
-                and args.distributed_dataset_storage
-                and utils.LOCAL_RANK == 0
-            )
-            or (not args.distributed_dataset_storage)
-        ):
-            # load to cpu
-            self.original_image_backup = image.contiguous()
-            if args.preload_dataset_to_gpu:
-                self.original_image_backup = self.original_image_backup.to("cuda")
-            self.image_width = self.original_image_backup.shape[2]
-            self.image_height = self.original_image_backup.shape[1]
-        else:
-            self.original_image_backup = None
-            self.image_height, self.image_width = utils.get_img_size()
+        # Single GPU mode - always load
+        # load to cpu
+        self.original_image_backup = image.contiguous()
+        if args.preload_dataset_to_gpu:
+            self.original_image_backup = self.original_image_backup.to("cuda")
+        self.image_width = self.original_image_backup.shape[2]
+        self.image_height = self.original_image_backup.shape[1]
 
         if args.time_image_loading:
             log_file.write(f"Image processing in {time.time() - start_time} seconds\n")

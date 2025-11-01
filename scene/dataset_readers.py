@@ -87,7 +87,6 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     for idx, key in tqdm(
         enumerate(cam_extrinsics),
         total=len(cam_extrinsics),
-        disable=(utils.LOCAL_RANK != 0),
     ):
 
         extr = cam_extrinsics[key]
@@ -227,20 +226,14 @@ def readColmapSceneInfo(path, images, eval, llffhold=10):
     bin_path = os.path.join(path, "sparse/0/points3D.bin")
     txt_path = os.path.join(path, "sparse/0/points3D.txt")
     if not os.path.exists(ply_path):
-        if utils.GLOBAL_RANK == 0:
-            print(
-                "Converting point3d.bin to .ply, will happen only the first time you open the scene."
-            )
-            try:
-                xyz, rgb, _ = read_points3D_binary(bin_path)
-            except:
-                xyz, rgb, _ = read_points3D_text(txt_path)
-            storePly(ply_path, xyz, rgb)
-            if utils.DEFAULT_GROUP.size() > 1:
-                torch.distributed.barrier()
-        else:
-            if utils.DEFAULT_GROUP.size() > 1:
-                torch.distributed.barrier()
+        print(
+            "Converting point3d.bin to .ply, will happen only the first time you open the scene."
+        )
+        try:
+            xyz, rgb, _ = read_points3D_binary(bin_path)
+        except:
+            xyz, rgb, _ = read_points3D_text(txt_path)
+        storePly(ply_path, xyz, rgb)
     if args.load_pt_path != "":
         pcd = None
     else:

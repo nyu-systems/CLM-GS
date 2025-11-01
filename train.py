@@ -13,7 +13,7 @@ import os
 import torch
 import sys
 import json
-from utils.general_utils import safe_state, init_distributed
+from utils.general_utils import safe_state
 import utils.general_utils as utils
 from argparse import ArgumentParser
 from arguments import (
@@ -21,7 +21,6 @@ from arguments import (
     ModelParams,
     PipelineParams,
     OptimizationParams,
-    DistributionParams,
     BenchmarkParams,
     DebugParams,
     print_all_args,
@@ -37,13 +36,9 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    dist_p = DistributionParams(parser)
     bench_p = BenchmarkParams(parser)
     debug_p = DebugParams(parser)
     args = parser.parse_args(sys.argv[1:])
-
-    # Set up distributed training
-    init_distributed(args)
 
     ## Prepare arguments.
     # Check arguments
@@ -52,16 +47,10 @@ if __name__ == "__main__":
     args = utils.get_args()
 
     # create log folder
-    if utils.GLOBAL_RANK == 0:
-        os.makedirs(args.log_folder, exist_ok=True)
-        os.makedirs(args.model_path, exist_ok=True)
-    if utils.WORLD_SIZE > 1:
-        torch.distributed.barrier(
-            group=utils.DEFAULT_GROUP
-        )  # log_folder is created before other ranks start writing log.
-    if utils.GLOBAL_RANK == 0:
-        with open(args.log_folder + "/args.json", "w") as f:
-            json.dump(vars(args), f)
+    os.makedirs(args.log_folder, exist_ok=True)
+    os.makedirs(args.model_path, exist_ok=True)
+    with open(args.log_folder + "/args.json", "w") as f:
+        json.dump(vars(args), f)
 
     # create cuda trace dump folder
     if args.trace_cuda_mem:
@@ -74,12 +63,7 @@ if __name__ == "__main__":
 
     # Initialize log file and print all args
     log_file = open(
-        args.log_folder
-        + "/python_ws="
-        + str(utils.WORLD_SIZE)
-        + "_rk="
-        + str(utils.GLOBAL_RANK)
-        + ".log",
+        args.log_folder + "/python.log",
         "a" if args.auto_start_checkpoint else "w",
     )
     utils.set_log_file(log_file)
@@ -93,6 +77,4 @@ if __name__ == "__main__":
     )
 
     # All done
-    if utils.WORLD_SIZE > 1:
-        torch.distributed.barrier(group=utils.DEFAULT_GROUP)
     utils.print_rank_0("\nTraining complete.")

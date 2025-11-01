@@ -10,7 +10,6 @@
 #
 
 import torch
-import torch.distributed as dist
 from scene import Scene, SceneDataset
 import os
 from tqdm import tqdm
@@ -25,7 +24,6 @@ import torchvision
 from utils.general_utils import (
     safe_state,
     set_args,
-    init_distributed,
     set_log_file,
     set_cur_iter,
 )
@@ -42,7 +40,6 @@ from arguments import (
     ModelParams,
     PipelineParams,
     OptimizationParams,
-    DistributionParams,
     BenchmarkParams,
     DebugParams,
     print_all_args,
@@ -65,12 +62,11 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
     num_cameras = len(views)
     strategy_history = DivisionStrategyHistoryFinal(
-        dataset, utils.DEFAULT_GROUP.size(), utils.DEFAULT_GROUP.rank()
+        dataset, 1, 0
     )
     progress_bar = tqdm(
         range(1, num_cameras + 1),
         desc="Rendering progress",
-        disable=(utils.LOCAL_RANK != 0),
     )
     for idx in range(1, num_cameras + 1, args.bsz):
         progress_bar.update(args.bsz)
@@ -119,23 +115,17 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
                     gt_camera.original_image.shape, device="cuda", dtype=torch.float32
                 )
 
-            if utils.DEFAULT_GROUP.size() > 1:
-                torch.distributed.all_reduce(
-                    image, op=dist.ReduceOp.SUM, group=utils.DEFAULT_GROUP
-                )
-
             image = torch.clamp(image, 0.0, 1.0)
             gt_image = torch.clamp(gt_camera.original_image / 255.0, 0.0, 1.0)
 
-            if utils.GLOBAL_RANK == 0:
-                torchvision.utils.save_image(
-                    image,
-                    os.path.join(render_path, "{0:05d}".format(actual_idx) + ".png"),
-                )
-                torchvision.utils.save_image(
-                    gt_image,
-                    os.path.join(gts_path, "{0:05d}".format(actual_idx) + ".png"),
-                )
+            torchvision.utils.save_image(
+                image,
+                os.path.join(render_path, "{0:05d}".format(actual_idx) + ".png"),
+            )
+            torchvision.utils.save_image(
+                gt_image,
+                os.path.join(gts_path, "{0:05d}".format(actual_idx) + ".png"),
+            )
 
             gt_camera.original_image = None
 
@@ -188,7 +178,6 @@ if __name__ == "__main__":
     lp = ModelParams(parser, sentinel=True)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    dist_p = DistributionParams(parser)
     bench_p = BenchmarkParams(parser)
     debug_p = DebugParams(parser)
     parser.add_argument("--iteration", default=-1, type=int)
@@ -201,14 +190,9 @@ if __name__ == "__main__":
     parser.add_argument("--r", default=-1, type=int)
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
-    init_distributed(args)
-    # This script only supports single-gpu rendering.
-    # I need to put the flags here because the render() function need it.
-    # However, disable them during render.py because they are only needed during training.
 
     log_file = open(
-        args.model_path
-        + f"/render_ws={utils.DEFAULT_GROUP.size()}_rk_{utils.DEFAULT_GROUP.rank()}.log",
+        args.model_path + "/render.log",
         "w",
     )
     set_log_file(log_file)
@@ -225,8 +209,6 @@ if __name__ == "__main__":
 
     print_all_args(args, log_file)
 
-    if utils.WORLD_SIZE > 1:
-        torch.distributed.barrier(group=utils.DEFAULT_GROUP)
     # Initialize system state (RNG)
     safe_state(args.quiet)
 

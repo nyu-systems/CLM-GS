@@ -69,9 +69,7 @@ class GaussianModel:
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(
-            0
-        )  # TODO: deal with self.send_to_gpui_cnt
+        self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
@@ -91,7 +89,7 @@ class GaussianModel:
             self._rotation,
             self._opacity,
             self.max_radii2D,
-            self.xyz_gradient_accum,  # TODO: deal with self.send_to_gpui_cnt
+            self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
@@ -121,9 +119,7 @@ class GaussianModel:
                 dim=1
             ).pin_memory()
         self.training_setup(training_args)
-        self.xyz_gradient_accum = (
-            xyz_gradient_accum  # TODO: deal with self.send_to_gpui_cnt
-        )
+        self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         if opt_dict is not None:
             self.optimizer.load_state_dict(opt_dict)
@@ -215,28 +211,9 @@ class GaussianModel:
         )
 
         # The above computation/memory is replicated on all ranks. Because initialization is small, it's ok.
-        # Split the point cloud across the ranks.
+        # Single GPU mode - no distribution needed
         args = utils.get_args()
-        if (
-            args.gaussians_distribution
-        ):  # shard 3dgs storage across all GPU including dp and mp groups.
-            shard_world_size = utils.DEFAULT_GROUP.size()
-            shard_rank = utils.DEFAULT_GROUP.rank()
-
-            point_ind_l, point_ind_r = utils.get_local_chunk_l_r(
-                N, shard_world_size, shard_rank
-            )
-            fused_point_cloud = fused_point_cloud[point_ind_l:point_ind_r].contiguous()
-            features = features[point_ind_l:point_ind_r].contiguous()
-            scales = scales[point_ind_l:point_ind_r].contiguous()
-            rots = rots[point_ind_l:point_ind_r].contiguous()
-            opacities = opacities[point_ind_l:point_ind_r].contiguous()
-            log_file.write(
-                "rank: {}, Number of initialized points: {}\n".format(
-                    utils.GLOBAL_RANK, N
-                )
-            )
-            # print("rank", utils.GLOBAL_RANK, "Number of initialized points after gaussians_distribution : ", fused_point_cloud.shape[0])
+        log_file.write("Number of initialized points: {}\n".format(N))
 
         if args.drop_initial_3dgs_p > 0.0:
             # drop each point with probability args.drop_initial_3dgs_p
@@ -249,11 +226,8 @@ class GaussianModel:
             rots = rots[drop_mask]
             opacities = opacities[drop_mask]
             log_file.write(
-                "rank: {}, Number of initialized points after random drop: {}\n".format(
-                    utils.GLOBAL_RANK, N
-                )
+                "Number of initialized points after random drop: {}\n".format(N)
             )
-            # print("rank", utils.GLOBAL_RANK, "Number of initialized points after random drop : ", fused_point_cloud.shape[0])
         
         # Init parameters
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
@@ -504,12 +478,7 @@ class GaussianModel:
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device=self.device)
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=self.device) 
-
-        shard_world_size = self.group_for_redistribution().size()
-        self.send_to_gpui_cnt = torch.zeros(
-            (self.get_xyz.shape[0], shard_world_size), dtype=torch.int, device=self.device
-        ) # TODO: Check where this param is called. If it's used for gpu, should stil init it there.
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=self.device)
 
         args = utils.get_args()
         log_file = utils.get_log_file()
@@ -777,19 +746,8 @@ class GaussianModel:
                 "sum_batched_locally_preprocessed_visibility_filter_int"
             ] = sum_batched_locally_preprocessed_visibility_filter_int
 
-        if args.sync_grad_mode == "dense":
-            sync_func = sync_gradients_densely
-        elif args.sync_grad_mode == "sparse":
-            sync_func = sync_gradients_sparsely
-        elif args.sync_grad_mode == "fused_dense":
-            sync_func = sync_gradients_fused_densely
-        elif args.sync_grad_mode == "fused_sparse":
-            sync_func = sync_gradients_fused_sparsely
-        else:
-            assert False, f"sync_grad_mode {args.sync_grad_mode} not supported."
-
-        if not args.gaussians_distribution and utils.DEFAULT_GROUP.size() > 1:
-            sync_func(self, utils.DEFAULT_GROUP)
+        # Single GPU mode - no gradient synchronization needed
+        pass
 
     def update_learning_rate(self, iteration):
         """Learning rate scheduling per step"""
@@ -1026,94 +984,17 @@ class GaussianModel:
         self, path
     ):  # here, we should be in torch.no_grad() context. train.py ensures that.
         args = utils.get_args()
+        # Single GPU mode - no distribution logic needed
         _xyz = _features_dc = _features_rest = _opacity = _scaling = _rotation = None
         utils.log_cpu_memory_usage("start save_ply")
-        group = utils.DEFAULT_GROUP
-        if args.gaussians_distribution and not args.distributed_save:
-            # gather all gaussians at rank 0
-            def gather_uneven_tensors(tensor):
-                # gather size of tensors on different ranks
-                tensor_sizes = torch.zeros(
-                    (group.size()), dtype=torch.int, device="cuda"
-                )
-                tensor_sizes[group.rank()] = tensor.shape[0]
-                dist.all_reduce(tensor_sizes, op=dist.ReduceOp.SUM)
-                # move tensor_sizes to CPU and convert to int list
-                tensor_sizes = tensor_sizes.cpu().numpy().tolist()
-
-                # NOTE: Internal implementation of gather could not gather tensors of different sizes.
-                # So, I do not use dist.gather(tensor, dst=0) but use dist.send(tensor, dst=0) and dist.recv(tensor, src=i) instead.
-
-                # gather tensors on different ranks using grouped send/recv
-                gathered_tensors = []
-                if group.rank() == 0:
-                    for i in range(group.size()):
-                        if i == group.rank():
-                            gathered_tensors.append(tensor)
-                        else:
-                            tensor_from_rk_i = torch.zeros(
-                                (tensor_sizes[i],) + tensor.shape[1:],
-                                dtype=tensor.dtype,
-                                device="cuda",
-                            )
-                            dist.recv(tensor_from_rk_i, src=i)
-                            gathered_tensors.append(tensor_from_rk_i)
-                    gathered_tensors = torch.cat(gathered_tensors, dim=0)
-                else:
-                    dist.send(tensor, dst=0)
-                # concatenate gathered tensors
-
-                return (
-                    gathered_tensors if group.rank() == 0 else None
-                )  # only return gather tensors at rank 0
-
-            _xyz = gather_uneven_tensors(self._xyz)
-            _features_dc = gather_uneven_tensors(self._features_dc)
-            _features_rest = gather_uneven_tensors(self._features_rest)
-            _opacity = gather_uneven_tensors(self._opacity)
-            _scaling = gather_uneven_tensors(self._scaling)
-            _rotation = gather_uneven_tensors(self._rotation)
-
-            if group.rank() != 0:
-                return
-
-        elif args.gaussians_distribution and args.distributed_save:
-            assert (
-                utils.DEFAULT_GROUP.size() > 1
-            ), "distributed_save should be used with more than 1 rank."
-            _xyz = self._xyz
-            _features_dc = self._features_dc
-            _features_rest = self._features_rest
-            _opacity = self._opacity
-            _scaling = self._scaling
-            _rotation = self._rotation
-            if path.endswith(".ply"):
-                path = (
-                    path[:-4]
-                    + "_rk"
-                    + str(utils.GLOBAL_RANK)
-                    + "_ws"
-                    + str(utils.WORLD_SIZE)
-                    + ".ply"
-                )
-        elif not args.gaussians_distribution:
-            if group.rank() != 0:
-                return
-            _xyz = self._xyz
-            _features_dc = self._features_dc
-            _features_rest = self._features_rest
-            _opacity = self._opacity
-            _scaling = self._scaling
-            _rotation = self._rotation
-            if path.endswith(".ply"):
-                path = (
-                    path[:-4]
-                    + "_rk"
-                    + str(utils.GLOBAL_RANK)
-                    + "_ws"
-                    + str(utils.WORLD_SIZE)
-                    + ".ply"
-                )
+        
+        # Directly use local tensors
+        _xyz = self._xyz
+        _features_dc = self._features_dc
+        _features_rest = self._features_rest
+        _opacity = self._opacity
+        _scaling = self._scaling
+        _rotation = self._rotation
 
         mkdir_p(os.path.dirname(path))
 
@@ -1593,28 +1474,6 @@ class GaussianModel:
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
 
         args = utils.get_args()
-        # The above computation/memory is replicated on all ranks. Because initialization is small, it's ok.
-        # Split the point cloud across the ranks.
-
-        if args.gaussians_distribution and utils.WORLD_SIZE > 1:
-            chunk = xyz.shape[0] // utils.WORLD_SIZE + 1
-            point_ind_l = chunk * utils.LOCAL_RANK
-            point_ind_r = min(chunk * (utils.LOCAL_RANK + 1), xyz.shape[0])
-            # xyz = xyz[point_ind_l:point_ind_r].contiguous()
-            # features_dc = features_dc[point_ind_l:point_ind_r].contiguous()
-            # features_extra = features_extra[point_ind_l:point_ind_r].contiguous()
-            # scales = scales[point_ind_l:point_ind_r].contiguous()
-            # rots = rots[point_ind_l:point_ind_r].contiguous()
-            # opacities = opacities[point_ind_l:point_ind_r].contiguous()
-
-            xyz = np.ascontiguousarray(xyz[point_ind_l:point_ind_r])
-            features_dc = np.ascontiguousarray(features_dc[point_ind_l:point_ind_r])
-            features_extra = np.ascontiguousarray(
-                features_extra[point_ind_l:point_ind_r]
-            )
-            scales = np.ascontiguousarray(scales[point_ind_l:point_ind_r])
-            rots = np.ascontiguousarray(rots[point_ind_l:point_ind_r])
-            opacities = np.ascontiguousarray(opacities[point_ind_l:point_ind_r])
 
         if args.drop_initial_3dgs_p > 0.0:
             # drop each point with probability args.drop_initial_3dgs_p
@@ -2029,9 +1888,6 @@ class GaussianModel:
             self._rotation = optimizable_tensors["rotation"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
-
-        self.send_to_gpui_cnt = self.send_to_gpui_cnt[valid_points_mask]
-
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         self.sum_visible_count_in_one_batch = self.sum_visible_count_in_one_batch[
@@ -2223,7 +2079,6 @@ class GaussianModel:
         new_opacities,
         new_scaling,
         new_rotation,
-        new_send_to_gpui_cnt,
         new_parameters=None,
     ):
         d = {
@@ -2290,10 +2145,6 @@ class GaussianModel:
             (self.get_xyz.shape[0]), device=self.device
         )
 
-        self.send_to_gpui_cnt = torch.cat(
-            (self.send_to_gpui_cnt, new_send_to_gpui_cnt), dim=0
-        )
-
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
@@ -2328,7 +2179,6 @@ class GaussianModel:
                 new_parameters = self._parameters[selected_pts_mask_cpu].repeat(N, 1)
                 new_parameters[:, :self._xyz.shape[1]] = xyz
                 new_parameters[:, (self._xyz.shape[1] + self._opacity.shape[1]):(self._xyz.shape[1] + self._opacity.shape[1] + self._scaling.shape[1])] = new_scaling
-                new_send_to_gpui_cnt = self.send_to_gpui_cnt[selected_pts_mask].repeat(N, 1)
                 
                 new_xyz = None
                 new_features_dc = None
@@ -2348,7 +2198,6 @@ class GaussianModel:
                 new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
                 new_opacities = self._opacity[selected_pts_mask].repeat(N, 1)
                 new_parameters = self._parameters[selected_pts_mask_cpu].repeat(N, 1)
-                new_send_to_gpui_cnt = self.send_to_gpui_cnt[selected_pts_mask].repeat(N, 1)
                 
                 new_features_dc = None
                 new_features_rest = None
@@ -2368,7 +2217,6 @@ class GaussianModel:
             new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
             new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
             new_opacities = self._opacity[selected_pts_mask].repeat(N, 1)
-            new_send_to_gpui_cnt = self.send_to_gpui_cnt[selected_pts_mask].repeat(N, 1)
             new_parameters = None
             
         self.densification_postfix(
@@ -2378,7 +2226,6 @@ class GaussianModel:
             new_opacities,
             new_scaling,
             new_rotation,
-            new_send_to_gpui_cnt,
             new_parameters,
         )
 
@@ -2415,7 +2262,6 @@ class GaussianModel:
                 new_scaling = None
                 new_rotation = None
                 new_parameters = self._parameters[selected_pts_mask_cpu]
-                new_send_to_gpui_cnt = self.send_to_gpui_cnt[selected_pts_mask]
                 
             elif self.args.gpu_cache == "xyzosr":
                 new_xyz = self._xyz[selected_pts_mask]
@@ -2423,7 +2269,6 @@ class GaussianModel:
                 new_scaling = self._scaling[selected_pts_mask]
                 new_rotation = self._rotation[selected_pts_mask]
                 new_parameters = self._parameters[selected_pts_mask_cpu]
-                new_send_to_gpui_cnt = self.send_to_gpui_cnt[selected_pts_mask]
                 new_features_dc = None
                 new_features_rest = None
             
@@ -2437,7 +2282,6 @@ class GaussianModel:
             new_opacities = self._opacity[selected_pts_mask]
             new_scaling = self._scaling[selected_pts_mask]
             new_rotation = self._rotation[selected_pts_mask]
-            new_send_to_gpui_cnt = self.send_to_gpui_cnt[selected_pts_mask]
             new_parameters = None
 
         self.densification_postfix(
@@ -2447,7 +2291,6 @@ class GaussianModel:
             new_opacities,
             new_scaling,
             new_rotation,
-            new_send_to_gpui_cnt,
             new_parameters,
         )
 
@@ -2527,11 +2370,8 @@ class GaussianModel:
         self.denom[send2gpu_final_filter_indices] += 1
 
     def group_for_redistribution(self):
-        args = utils.get_args()
-        if args.gaussians_distribution:
-            return utils.DEFAULT_GROUP
-        else:
-            return utils.SingleGPUGroup()
+        # Single GPU mode - return single GPU group
+        return utils.SingleGPUGroup()
 
     def all2all_gaussian_state(self, state, destination, i2j_send_size):
         comm_group = self.group_for_redistribution()
@@ -2727,41 +2567,8 @@ class GaussianModel:
         if args.redistribute_gaussians_mode == "no_redistribute":
             return
 
-        comm_group_for_redistribution = self.group_for_redistribution()
-        if not self.need_redistribute_gaussians(comm_group_for_redistribution):
-            return
-
-        # Get each 3dgs' destination GPU.
-        if args.redistribute_gaussians_mode == "random_redistribute":
-            # random redistribution to balance the number of gaussians on each GPU.
-            destination = self.get_destination_1(comm_group_for_redistribution.size())
-        else:
-            raise ValueError(
-                "Invalid redistribute_gaussians_mode: "
-                + args.redistribute_gaussians_mode
-            )
-
-        # Count the number of 3dgs to be sent to each GPU.
-        local2j_send_size = torch.bincount(
-            destination, minlength=comm_group_for_redistribution.size()
-        ).int()
-        assert (
-            len(local2j_send_size) == comm_group_for_redistribution.size()
-        ), "local2j_send_size: " + str(local2j_send_size)
-
-        i2j_send_size = torch.zeros(
-            (
-                comm_group_for_redistribution.size(),
-                comm_group_for_redistribution.size(),
-            ),
-            dtype=torch.int,
-            device="cuda",
-        )
-        torch.distributed.all_gather_into_tensor(
-            i2j_send_size, local2j_send_size, group=comm_group_for_redistribution
-        )
-        i2j_send_size = i2j_send_size.cpu().numpy().tolist()
-        # print("rank", utils.LOCAL_RANK, "local2j_send_size: ", local2j_send_size, "i2j_send_size: ", i2j_send_size)
+        # Single GPU mode - no redistribution needed
+        return
 
         optimizable_tensors = self.all2all_tensors_in_optimizer(
             destination, i2j_send_size
@@ -2781,13 +2588,6 @@ class GaussianModel:
         )
         # NOTE: This function is called right after desify_and_prune. Therefore self.xyz_gradient_accum, self.denom and self.max_radii2D are all zero.
         # We do not need to all2all them here.
-
-        # should I all2all send_to_gpui_cnt? I think I should not. Because 1. for simplicity now, 2. we should refresh it and do not use too old statistics.
-        self.send_to_gpui_cnt = torch.zeros(
-            (self.get_xyz.shape[0], comm_group_for_redistribution.size()),
-            dtype=torch.int,
-            device="cuda",
-        )
 
         torch.cuda.empty_cache()
 

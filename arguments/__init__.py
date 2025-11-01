@@ -159,16 +159,9 @@ class OptimizationParams(ParamGroup):
         self.random_background = False
         self.min_opacity = 0.005
         self.lr_scale_mode = "sqrt"  # can be "linear", "sqrt", or "accumu"
-        super().__init__(parser, "Optimization Parameters")
-
-
-class DistributionParams(ParamGroup):
-    def __init__(self, parser):
 
         # Dataset and Model save
         self.bsz = 1  # batch size.
-        self.distributed_dataset_storage = True  # if True, we store dataset only on rank 0 and broadcast to other ranks.
-        self.distributed_save = True
         self.preload_dataset_to_gpu = (
             False  # By default, we do not preload dataset to GPU.
         )
@@ -184,9 +177,7 @@ class DistributionParams(ParamGroup):
         self.exact_filter = True
         self.log_cpu_adam_trailing_overhead = False
         self.cpu_adam_trailing_overhead = {"step": 1, "from_default_stream": 0.0, "from_comm_stream": 0.0}
-
-        super().__init__(parser, "Distribution Parameters")
-
+        super().__init__(parser, "Optimization Parameters")
 
 class BenchmarkParams(ParamGroup):
     def __init__(self, parser):
@@ -273,15 +264,7 @@ def print_all_args(args, log_file):
     for arg in vars(args):
         log_file.write("{}: {}\n".format(arg, getattr(args, arg)))
     log_file.write("-" * 30 + "\n\n")
-    log_file.write(
-        "world_size: "
-        + str(utils.WORLD_SIZE)
-        + " rank: "
-        + str(utils.GLOBAL_RANK)
-        + "; bsz: "
-        + str(args.bsz)
-        + "\n"
-    )
+    log_file.write("bsz: " + str(args.bsz) + "\n")
 
     # Make sure block size match between python and cuda code.
     cuda_block_x, cuda_block_y, one_dim_block_size = (
@@ -316,26 +299,6 @@ def init_args(args):
     if args.auto_start_checkpoint:
         args.start_checkpoint = find_latest_checkpoint(args.log_folder)
 
-    if utils.DEFAULT_GROUP.size() == 1:
-        args.gaussians_distribution = False
-        args.image_distribution = False
-        args.image_distribution_mode = ""
-        args.distributed_dataset_storage = False
-        args.distributed_save = False
-        args.local_sampling = False
-
-    if args.preload_dataset_to_gpu:
-        args.distributed_dataset_storage = False
-        args.local_sampling = False
-        # TODO: args.preload_dataset_to_gpu should be independent of args.local_sampling and args.distributed_dataset_storage
-        # We can distributedly save dataset and preload every shard to GPU at the same time.
-
-    if args.local_sampling:
-        assert args.distributed_dataset_storage, "local_sampling works only when distributed_dataset_storage==True"
-
-    if not args.gaussians_distribution:
-        args.distributed_save = False
-    
     if args.pipelined_offload:
         assert args.offload, "pipelined_offload works only when offload==True"
         assert args.bsz > 1, "pipelined_offload works only when bsz > 1"
@@ -350,4 +313,3 @@ def init_args(args):
 
     # Set up global args
     utils.set_args(args)
-    # TODO: handle the warning: https://github.com/pytorch/pytorch/blob/bae409388cfc20cce656bf7b671e45aaf81dd1c8/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp#L1849-L1852

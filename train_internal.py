@@ -2,23 +2,14 @@ import os
 import torch
 import json
 from utils.loss_utils import l1_loss
-from gaussian_renderer import (
-    gsplat_distributed_preprocess3dgs_and_all2all_final,
-    gsplat_render_final,
-)
 from torch.cuda import nvtx
 from torch.utils.data import DataLoader
 from scene import Scene, GaussianModel, SceneDataset, TorchSceneDataset, custom_collate_fn
-# from gaussian_renderer.loss_distribution import (
-#     batched_loss_computation,
-#     torch_compiled_loss
-# )
 from utils.general_utils import prepare_output_and_logger, globally_sync_for_timer
 import utils.general_utils as utils
 from utils.timer import Timer, End2endTimer
 from tqdm import tqdm
 from utils.image_utils import psnr
-import torch.distributed as dist
 from densification import (
     densification, 
     gsplat_densification, 
@@ -1333,8 +1324,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     end2end_timers.start()
     progress_bar = tqdm(
         range(1, opt_args.iterations + 1),
-        desc="Training progress",
-        disable=(utils.LOCAL_RANK != 0),
+        desc="Training progress"
     )
     progress_bar.update(start_from_this_iteration - 1)
     num_trained_batches = 0
@@ -1609,20 +1599,11 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 utils.print_rank_0("\n[ITER {}] Saving Checkpoint".format(iteration))
                 log_file.write("[ITER {}] Saving Checkpoint\n".format(iteration))
                 save_folder = scene.model_path + "/checkpoints/" + str(iteration) + "/"
-                if utils.DEFAULT_GROUP.rank() == 0:
-                    os.makedirs(save_folder, exist_ok=True)
-                    if utils.DEFAULT_GROUP.size() > 1:
-                        torch.distributed.barrier(group=utils.DEFAULT_GROUP)
-                elif utils.DEFAULT_GROUP.size() > 1:
-                    torch.distributed.barrier(group=utils.DEFAULT_GROUP)
+                os.makedirs(save_folder, exist_ok=True)
                 torch.save(
                     (gaussians.capture(), iteration + args.bsz),
                     save_folder
-                    + "/chkpnt_ws="
-                    + str(utils.WORLD_SIZE)
-                    + "_rk="
-                    + str(utils.GLOBAL_RANK)
-                    + ".pth",
+                    + "/chkpnt.pth"
                 )
                 end2end_timers.start()
 
@@ -1919,11 +1900,6 @@ def training_report(
                                 gt_camera.original_image.shape,
                                 device="cuda",
                                 dtype=torch.float32,
-                            )
-
-                        if utils.DEFAULT_GROUP.size() > 1:
-                            torch.distributed.all_reduce(
-                                image, op=dist.ReduceOp.SUM, group=utils.DEFAULT_GROUP
                             )
 
                         image = torch.clamp(image, 0.0, 1.0)

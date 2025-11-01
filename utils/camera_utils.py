@@ -36,39 +36,23 @@ def loadCam(args, id, cam_info, decompressed_image=None, return_image=False):
     resolution = utils.get_img_width(), utils.get_img_height()
     # NOTE: we do not support downsampling here.
 
-    # may use cam_info.uid
-    if (
-        (
-            args.local_sampling
-            and args.distributed_dataset_storage
-            and utils.GLOBAL_RANK == id % utils.WORLD_SIZE
-        )
-        or (
-            not args.local_sampling
-            and args.distributed_dataset_storage
-            and utils.LOCAL_RANK == 0
-        )
-        or (not args.distributed_dataset_storage)
-    ):
-        if args.time_image_loading:
-            start_time = time.time()
-        image = Image.open(cam_info.image_path)
-        resized_image_rgb = PILtoTorch(
-            image, resolution, args, log_file, decompressed_image=decompressed_image
-        )
-        if args.time_image_loading:
-            log_file.write(f"PILtoTorch image in {time.time() - start_time} seconds\n")
+    # Single GPU mode - always load
+    if args.time_image_loading:
+        start_time = time.time()
+    image = Image.open(cam_info.image_path)
+    resized_image_rgb = PILtoTorch(
+        image, resolution, args, log_file, decompressed_image=decompressed_image
+    )
+    if args.time_image_loading:
+        log_file.write(f"PILtoTorch image in {time.time() - start_time} seconds\n")
 
-        # assert resized_image_rgb.shape[0] == 3, "Image should have exactly 3 channels!"
-        gt_image = resized_image_rgb[:3, ...].contiguous()
-        loaded_mask = None
+    # assert resized_image_rgb.shape[0] == 3, "Image should have exactly 3 channels!"
+    gt_image = resized_image_rgb[:3, ...].contiguous()
+    loaded_mask = None
 
-        # Free the memory: because the PIL image has been converted to torch tensor, we don't need it anymore. And it takes up lots of cpu memory.
-        image.close()
-        image = None
-    else:
-        gt_image = None
-        loaded_mask = None
+    # Free the memory: because the PIL image has been converted to torch tensor, we don't need it anymore. And it takes up lots of cpu memory.
+    image.close()
+    image = None
 
     if return_image:
         return gt_image
@@ -141,7 +125,6 @@ def decompressed_images_from_camInfos_multiprocess(cam_infos, args):
             tqdm(
                 pool.imap(load_decompressed_image, tasks),
                 total=total_cameras,
-                disable=(utils.LOCAL_RANK != 0),
             )
         )
 
@@ -271,7 +254,7 @@ def cameraList_from_camInfos(cam_infos, args):
 
     camera_list = []
     for id, c in tqdm(
-        enumerate(cam_infos), total=len(cam_infos), disable=(utils.LOCAL_RANK != 0)
+        enumerate(cam_infos), total=len(cam_infos)
     ):
         camera_list.append(
             loadCam(
@@ -283,40 +266,7 @@ def cameraList_from_camInfos(cam_infos, args):
             )
         )
 
-    if utils.DEFAULT_GROUP.size() > 1:
-        torch.distributed.barrier(group=utils.DEFAULT_GROUP)
-
-    # camera_list = update_camera_list_with_spatial_position(camera_list)
-
     return camera_list
-
-# def update_camera_list_with_spatial_position(camera_list):
-#     min_x, min_y, min_z = 1e10, 1e10, 1e10
-#     max_x, max_y, max_z = -1e10, -1e10, -1e10
-#     for cam in camera_list:
-#         # use cam.camera_center_cpu to update min and max
-#         x, y, z = cam.camera_center_cpu
-#         min_x = min(min_x, x)
-#         min_y = min(min_y, y)
-#         min_z = min(min_z, z)
-#         max_x = max(max_x, x)
-#         max_y = max(max_y, y)
-#         max_z = max(max_z, z)
-    
-#     # find the longest dimension k
-#     k = max(max_x - min_x, max_y - min_y, max_z - min_z)
-#     if k == max_x - min_x:
-#         k = 0
-#     elif k == max_y - min_y:
-#         k = 1
-#     else:
-#         k = 2
-    
-#     # update camera_list with spatial position
-#     for cam in camera_list:
-#         cam.key_dim = k
-    
-#     return camera_list
 
 
 def camera_to_JSON(id, camera: Camera):
