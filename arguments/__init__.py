@@ -12,7 +12,6 @@
 from argparse import ArgumentParser, Namespace
 import sys
 import os
-from gaussian_renderer.distribution_config import init_image_distribution_config
 import utils.general_utils as utils
 import diff_gaussian_rasterization
 
@@ -165,31 +164,11 @@ class OptimizationParams(ParamGroup):
 
 class DistributionParams(ParamGroup):
     def __init__(self, parser):
-        # Distribution for pixel-wise workloads.
-        self.image_distribution = True
-        self.image_distribution_mode = "final"
-        self.heuristic_decay = 0.0
-        self.no_heuristics_update = False
-        self.border_divpos_coeff = 1.0
-        self.adjust_strategy_warmp_iterations = -1
-
-        # Distribution for 3DGS-wise workloads.
-        self.gaussians_distribution = True
-        self.redistribute_gaussians_mode = "random_redistribute"  # "no_redistribute"
-        self.redistribute_gaussians_frequency = (
-            10  # redistribution frequency for 3DGS storage location.
-        )
-        self.redistribute_gaussians_threshold = (
-            1.1  # threshold to apply redistribution for 3DGS storage location
-        )
-        self.sync_grad_mode = "dense"  # "dense", "sparse", "fused_dense", "fused_sparse" gradient synchronization. Only use when gaussians_distribution is False.
-        self.grad_normalization_mode = "none"  # "divide_by_visible_count", "square_multiply_by_visible_count", "multiply_by_visible_count", "none" gradient normalization mode.
 
         # Dataset and Model save
         self.bsz = 1  # batch size.
         self.distributed_dataset_storage = True  # if True, we store dataset only on rank 0 and broadcast to other ranks.
         self.distributed_save = True
-        self.local_sampling = False
         self.preload_dataset_to_gpu = (
             False  # By default, we do not preload dataset to GPU.
         )

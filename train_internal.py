@@ -1317,9 +1317,6 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         dataloader_iter = iter(dataloader)
     else:
         train_dataset = SceneDataset(scene.getTrainCameras(), scene.getTrainCamerasInfo())
-    if args.adjust_strategy_warmp_iterations == -1:
-        args.adjust_strategy_warmp_iterations = train_dataset.camera_size
-        # use one epoch to warm up. do not use the first epoch's running time for adjustment of strategy.
 
     # Init background
     background = None
