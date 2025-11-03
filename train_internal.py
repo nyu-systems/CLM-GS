@@ -20,6 +20,7 @@ from clm_kernels import (
     send_shs2cpu_grad_buffer_stream,
     send_shs2gpu_stream_retention,
     send_shs2cpu_grad_buffer_stream_retention,
+    spherical_harmonics_bwd_inplace
 )
 import clm_kernels
 import torch.multiprocessing
@@ -32,7 +33,6 @@ from gsplat import (
     isect_tiles,
     isect_offset_encode,
     rasterize_to_pixels,
-    spherical_harmonics_bwd_inplace,
 )
 from functools import reduce
 import fast_tsp
