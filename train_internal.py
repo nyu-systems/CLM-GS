@@ -1291,16 +1291,13 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         if args.braindeath_offload:
             N = gaussians._xyz.shape[0]
 
-            if args.fairBraindead:
-                losses, visibility = fairBraindead_offload_impl(
-                    gaussians,
-                    scene,
-                    batched_cameras,
-                    background,
-                    sparse_adam=args.sparse_adam,
-                )
-            else:
-                raise ValueError("Invalid fairBraindead value")
+            losses, visibility = fairBraindead_offload_impl(
+                gaussians,
+                scene,
+                batched_cameras,
+                background,
+                sparse_adam=args.sparse_adam,
+            )
             batched_screenspace_pkg = {}
 
             # Sync losses in the batch
