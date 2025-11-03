@@ -1,6 +1,6 @@
 import torch
 import cpu_adam
-from gsplat import selective_adam_update
+from clm_kernels import selective_adam_update
 
 class SelectiveAdam(torch.optim.Adam):
     """
