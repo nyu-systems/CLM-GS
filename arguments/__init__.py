@@ -90,7 +90,6 @@ class AuxiliaryParams(ParamGroup):
         self.sharing_strategy = "default" # "default" ("file_descriptor"), or "file_system" [see https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies]
         self.gpu_cache = "no_cache"
         self.gpu = 0
-        self.inplace_zero_grad = False
         self.dense_ply_file = ""
         self.fused_adam = "default"
         self.sparse_adam = False

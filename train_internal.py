@@ -403,7 +403,7 @@ def pipeline_offload_retention_optimized_v5_impl(
                             parameters_grad):
         torch.cuda.nvtx.range_push(f"cpuadam thread for iter: [{iteration},{iteration+bsz})")
 
-        version = 3 if args.inplace_zero_grad else 2
+        version = 3 # inplace_zero_grad is true 
         parameters.grad = parameters_grad
         if not args.stop_update_param:
             torch.cuda.nvtx.range_push("cpu_adam.sparse_step()")
