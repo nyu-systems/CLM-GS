@@ -40,11 +40,15 @@ from scene.cameras import get_space_sort_key_dim
 import gc
 from clm_kernels import fused_ssim
 
+LAMBDA_DSSIM = 0.2  # Loss weight for SSIM
+TILE_SIZE = 16
+
+
 @torch.compile
 def loss_combined(image, image_gt, ssim_loss):
-    lambda_dssim = 0.2 # TODO: allow this to be set by the user
+    LAMBDA_DSSIM = 0.2 # TODO: allow this to be set by the user
     Ll1 = l1_loss(image, image_gt)
-    loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (
+    loss = (1.0 - LAMBDA_DSSIM) * Ll1 + LAMBDA_DSSIM * (
                 1.0 - ssim_loss
             )
     return loss
@@ -139,6 +143,7 @@ def pipeline_forward_one_step_shs_inplace(
     background,
     pipe_args
 ):
+    MICRO_BATCH_SIZE = 1 # NOTE: microbatch here only contains one camera.
 
     viewmat = camera.world_view_transform.transpose(0, 1)  # why transpose
     # K = camera.create_k_on_gpu() # create K now, which may invoke cpu-gpu transfer
@@ -146,8 +151,6 @@ def pipeline_forward_one_step_shs_inplace(
     n_selected = filtered_xyz_gpu.shape[0]
     image_width = int(utils.get_img_width())
     image_height = int(utils.get_img_height())
-    tile_size = 16
-    B = 1 # micro batch size is just 1
 
     batched_radiis, batched_means2D, batched_depths, batched_conics, _ = (
         fully_fused_projection(
@@ -183,26 +186,26 @@ def pipeline_forward_one_step_shs_inplace(
 
     # render
     # Identify intersecting tiles.
-    tile_width = math.ceil(image_width / float(tile_size))
-    tile_height = math.ceil(image_height / float(tile_size))
+    tile_width = math.ceil(image_width / float(TILE_SIZE))
+    tile_height = math.ceil(image_height / float(TILE_SIZE))
 
     # flatten_ids: (C*N)
     _, isect_ids, flatten_ids = isect_tiles(
         means2d=batched_means2D,
         radii=batched_radiis,
         depths=batched_depths,
-        tile_size=tile_size,
+        tile_size=TILE_SIZE,
         tile_width=tile_width,
         tile_height=tile_height,
         packed=False,
     )
     isect_offsets = isect_offset_encode(
-        isect_ids, B, tile_width, tile_height
-    )  # (B, tile_height, tile_width)
+        isect_ids, MICRO_BATCH_SIZE, tile_width, tile_height
+    )  # (MICRO_BATCH_SIZE, tile_height, tile_width)
 
     # Rasterize to pixels. batched_rendered_image: (B, image_height, image_width, 3)
     backgrounds = (
-        background.repeat(B, 1) if background is not None else None
+        background.repeat(MICRO_BATCH_SIZE, 1) if background is not None else None
     )
     rendered_image, _ = rasterize_to_pixels(
         means2d=batched_means2D,
@@ -211,7 +214,7 @@ def pipeline_forward_one_step_shs_inplace(
         opacities=batched_opacities,
         image_width=image_width,
         image_height=image_height,
-        tile_size=tile_size,
+        tile_size=TILE_SIZE,
         isect_offsets=isect_offsets,
         flatten_ids=flatten_ids,
         backgrounds=backgrounds,
@@ -1185,6 +1188,7 @@ def pipeline_forward_one_step(
     pipe_args,
     eval=False,
 ):
+    MICRO_BATCH_SIZE = 1 # NOTE: microbatch here only contains one camera.
     image_width = int(utils.get_img_width())
     image_height = int(utils.get_img_height())
     tanfovx = math.tan(camera.FoVx * 0.5)
@@ -1203,8 +1207,6 @@ def pipeline_forward_one_step(
 
     viewmat = camera.world_view_transform.transpose(0, 1)  # why transpose
     n_selected = filtered_xyz_gpu.shape[0]
-    tile_size = 16
-    B = 1 # micro batch size is just 1
 
     batched_radiis, batched_means2D, batched_depths, batched_conics, _ = (
         fully_fused_projection(
@@ -1238,27 +1240,27 @@ def pipeline_forward_one_step(
 
     # render
     # Identify intersecting tiles.
-    tile_width = math.ceil(image_width / float(tile_size))
-    tile_height = math.ceil(image_height / float(tile_size))
+    tile_width = math.ceil(image_width / float(TILE_SIZE))
+    tile_height = math.ceil(image_height / float(TILE_SIZE))
 
     # flatten_ids: (C*N)
     _, isect_ids, flatten_ids = isect_tiles(
         means2d=batched_means2D,
         radii=batched_radiis,
         depths=batched_depths,
-        tile_size=tile_size,
+        tile_size=TILE_SIZE,
         tile_width=tile_width,
         tile_height=tile_height,
         packed=False,
     )
     isect_offsets = isect_offset_encode(
-        isect_ids, B, tile_width, tile_height
-    )  # (B, tile_height, tile_width)
+        isect_ids, MICRO_BATCH_SIZE, tile_width, tile_height
+    )  # (MICRO_BATCH_SIZE, tile_height, tile_width)
 
 
-    # Rasterize to pixels. batched_rendered_image: (B, image_height, image_width, 3)
+    # Rasterize to pixels. batched_rendered_image: (MICRO_BATCH_SIZE, image_height, image_width, 3)
     backgrounds = (
-        background.repeat(B, 1) if background is not None else None
+        background.repeat(MICRO_BATCH_SIZE, 1) if background is not None else None
     )
     rendered_image, _ = rasterize_to_pixels(
         means2d=batched_means2D,
@@ -1267,7 +1269,7 @@ def pipeline_forward_one_step(
         opacities=batched_opacities,
         image_width=image_width,
         image_height=image_height,
-        tile_size=tile_size,
+        tile_size=TILE_SIZE,
         isect_offsets=isect_offsets,
         flatten_ids=flatten_ids,
         backgrounds=backgrounds,
