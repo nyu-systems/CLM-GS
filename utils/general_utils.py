@@ -487,7 +487,7 @@ def load_checkpoint(args):
     file_name = args.start_checkpoint + checkpoint_files[0]
     (model_params, start_from_this_iteration) = torch.load(
         file_name, 
-        map_location=(torch.device('cpu') if args.offload else "cuda:0")
+        map_location=torch.device('cpu')
     )
 
     if args.drop_duplicate_gaussians_coeff != 1.0:

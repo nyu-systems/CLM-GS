@@ -61,41 +61,94 @@ class ParamGroup:
 
 class AuxiliaryParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
-        self.debug_from = -1
-        self.detect_anomaly = False
-        self.test_iterations = [7_000, 30_000]
-        self.save_iterations = [7_000, 30_000]
-        self.quiet = False
-        self.checkpoint_iterations = []
-        self.start_checkpoint = ""
-        self.auto_start_checkpoint = False
-        self.log_folder = "/tmp/gaussian_splatting"
-        self.log_interval = 250
-        self.load_ply_path = ""
-        self.load_ply_max = 1_000_000
-        self.load_pt_path = ""
-        self.llffhold = 8
-        self.offload = False
-        self.pipelined_offload = False
-        self.braindeath_offload = False
-        self.grid_size_H = 32
-        self.grid_size_D = 32
-        self.prealloc_capacity = 5_000_000
-        self.fused_loss = "advanced_fuse" # "default", "hand_written", "torch_compile", "advanced_fuse"s
-        self.decode_dataset_path = "/tmp"
-        self.num_workers = 0
-        self.sharing_strategy = "default" # "default" ("file_descriptor"), or "file_system" [see https://pytorch.org/docs/stable/multiprocessing.html#sharing-strategies]
-        self.gpu_cache = "no_cache"
-        self.gpu = 0
-        self.dense_ply_file = ""
-        self.fused_adam = "default"
-        self.sparse_adam = False
-        self.matrixcity_ocean_mask = False
-        self.packed = False
-        self.pipeline_mode = "final"
-        self.fairBaseline = False
-        self.delay_cpuadam_notaccessed_gs = False
-        self.reorder_by_min_sparsity_at_end = True
+        # ====================================================================
+        # OFFLOADING CONFIGURATION
+        # ====================================================================
+        # There are two main offloading modes:
+        # 1. BRAINDEATH OFFLOAD: Simple baseline that loads ALL parameters to GPU,
+        #    processes all cameras, then offloads ALL gradients back to CPU
+        # 2. FINAL OFFLOAD (PIPELINED): Advanced retention-based offload with
+        #    selective loading and overlapped communication/computation
+        # ====================================================================
+        
+        # --- Braindeath Offload (Simple Baseline) ---
+        self.braindeath_offload = False  # Enable braindeath offload mode
+        
+        # --- Final Offload (Pipelined/Retention-based) ---
+        self.final_offload = False             # Enable final offload mode (required for pipelined_offload)
+        self.comm_stream_priority = -1 # by default, use -1 as the priority of the stream
+        self.grid_size_H = 32            # Grid size for height dimension (used in filtering/spatial hashing)
+        self.grid_size_D = 32            # Grid size for depth dimension
+        self.prealloc_capacity = 5_000_000  # Pre-allocated capacity for parameters
+
+        # --- Shared Offload Optimization Flags (used by both modes) ---
+        self.sparse_adam = False         # Use sparse Adam optimizer (only update visible Gaussians)
+        self.fused_adam = "default"      # Fused Adam implementation: "default" or other variants
+        self.delay_cpuadam_notaccessed_gs = False  # Delay CPU Adam updates for non-accessed Gaussians
+        self.reorder_by_min_sparsity_at_end = True # Reorder Gaussians by minimum sparsity at end of training
+        
+        # ====================================================================
+        # MEMORY MANAGEMENT
+        # ====================================================================
+        
+        # ====================================================================
+        # DATA LOADING & DATASET
+        # ====================================================================
+        self.decode_dataset_path = "/tmp"  # Path for decoded dataset storage
+        self.num_workers = 0             # Number of worker threads for data loading
+        self.sharing_strategy = "default" # PyTorch multiprocessing sharing strategy: "default" ("file_descriptor"), or "file_system"
+        self.llffhold = 8                # LLFF dataset hold-out value
+        
+        # ====================================================================
+        # MODEL I/O
+        # ====================================================================
+        self.load_ply_path = ""          # Path to load pre-trained PLY file
+        self.load_ply_max = 1_000_000    # Maximum number of points to load from PLY
+        self.load_pt_path = ""           # Path to load PyTorch checkpoint
+        self.dense_ply_file = ""         # Path to dense PLY file
+        self.start_checkpoint = ""       # Checkpoint to resume training from
+        self.auto_start_checkpoint = False  # Automatically find and load latest checkpoint
+        
+        # ====================================================================
+        # LOGGING & MONITORING
+        # ====================================================================
+        self.log_folder = "/tmp/gaussian_splatting"  # Folder for logging outputs
+        self.log_interval = 250          # Iteration interval for logging
+        self.quiet = False               # Suppress verbose output
+        
+        # ====================================================================
+        # TRAINING CONTROL & EVALUATION
+        # ====================================================================
+        self.test_iterations = [7_000, 30_000]     # Iterations at which to run test evaluation
+        self.save_iterations = [7_000, 30_000]     # Iterations at which to save model
+        self.checkpoint_iterations = []  # Iterations at which to save checkpoints
+        
+        # ====================================================================
+        # OPTIMIZATION & LOSS
+        # ====================================================================
+        self.fused_loss = "advanced_fuse" # Loss fusion mode: "default", "hand_written", "torch_compile", "advanced_fuse"
+        
+        # ====================================================================
+        # DEBUGGING & PROFILING
+        # ====================================================================
+        self.debug_from = -1             # Start debugging from this iteration
+        self.detect_anomaly = False      # Enable PyTorch anomaly detection
+        
+        # ====================================================================
+        # HARDWARE & DEVICE
+        # ====================================================================
+        self.gpu = 0                     # GPU device ID to use
+        
+        # ====================================================================
+        # DATASET-SPECIFIC FLAGS
+        # ====================================================================
+        self.matrixcity_ocean_mask = False  # Enable ocean masking for MatrixCity dataset
+        
+        # ====================================================================
+        # EXPERIMENTAL / ADVANCED FLAGS
+        # ====================================================================
+        self.packed = False              # Use packed representation
+        
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args): 
@@ -148,7 +201,6 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.0002
         self.densify_memory_limit_percentage = 0.9
         self.disable_auto_densification = False
-        self.opacity_reset_until_iter = -1
         self.random_background = False
         self.min_opacity = 0.005
         self.lr_scale_mode = "sqrt"  # can be "linear", "sqrt", or "accumu"
@@ -194,7 +246,6 @@ class DebugParams(ParamGroup):
         self.reset_each_iter = False # Reset max memory for  each iteration
         self.save_tensors = False # Save model parameters as .pt file
 
-        self.comm_stream_priority = 0
         self.subsample_ratio = 1.0
         self.upsample_ratio = 0.0
         self.reinit_ply = False
@@ -256,19 +307,13 @@ def find_latest_checkpoint(log_folder):
 
 def init_args(args):
 
-    if args.opacity_reset_until_iter == -1:
-        args.opacity_reset_until_iter = args.densify_until_iter + args.bsz
+    assert ((args.final_offload != args.braindeath_offload) and (args.final_offload or args.braindeath_offload)),  "either final_offload or braindeath_offload must be True, and only one of them can be True"
 
     # Logging are saved with where model is saved.
     args.log_folder = args.model_path
 
     if args.auto_start_checkpoint:
         args.start_checkpoint = find_latest_checkpoint(args.log_folder)
-
-    if args.pipelined_offload:
-        assert args.offload, "pipelined_offload works only when offload==True"
-        assert args.bsz > 1, "pipelined_offload works only when bsz > 1"
-        assert args.gpu_cache == "xyzosr", "now pipelined_offload works only when gpu_cache == xyzosr"
 
     # sort test_iterations
     args.test_iterations.sort()

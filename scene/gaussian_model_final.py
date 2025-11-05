@@ -311,7 +311,6 @@ class GaussianModelXYZOSROffload(BaseGaussianModel):
         self, path, n_split, split_size
     ):
         args = utils.get_args()
-        assert args.offload, "Only implemented for offloading."
         _xyz = _features_dc = _features_rest = _opacity = _scaling = _rotation = None
         utils.log_cpu_memory_usage("start save_ply")
         _xyz = self._xyz

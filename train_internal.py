@@ -783,7 +783,6 @@ def pipeline_offload_retention_optimized_v5_impl(
     # Sanity checks for overlapped CPU Adam configuration
     assert microbatch_idx == bsz, "microbatch_idx should be equal to bsz."
     assert args.lr_scale_mode == "sqrt", "Overlap CPUAdam only supports sqrt lr scaling"
-    assert args.gpu_cache == "xyzosr", "Overlap CPUAdam only supports xyzosr cache"
     assert not args.stop_update_param, "Overlap CPUAdam does not support stop_update_param"
     
     # ------------------------------------------------------------------------
@@ -1323,12 +1322,12 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         gaussians = GaussianModelBraindeathOffload(sh_degree=dataset_args.sh_degree)
         utils.print_rank_0("Using GaussianModelBraindeathOffload")
         log_file.write("Using GaussianModelBraindeathOffload\n")
-    elif args.gpu_cache == "xyzosr":
+    elif args.final_offload:
         gaussians = GaussianModelXYZOSROffload(sh_degree=dataset_args.sh_degree)
         utils.print_rank_0("Using GaussianModelXYZOSROffload")
         log_file.write("Using GaussianModelXYZOSROffload\n")
     else:
-        raise ValueError(f"Invalid offload configuration: braindeath_offload={args.braindeath_offload}, gpu_cache={args.gpu_cache}")
+        raise ValueError(f"Invalid offload configuration: braindeath_offload={args.braindeath_offload}, final_offload={args.final_offload}")
 
     with torch.no_grad():
         scene = Scene(args, gaussians)
@@ -1538,12 +1537,10 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             )
             log_file.write(log_string)
 
-        elif args.pipelined_offload:
+        elif args.final_offload:
             # OPTIMIZED: Retention-based parameter offloading with overlapped comm/compute
             # Selective loading → retention across cameras → concurrent CPU Adam
-            assert args.offload, "Pipelined offload requires offloading"
             assert args.bsz > 1, "Pipelined offload requires batch size > 1"
-            assert args.gpu_cache == "xyzosr", "Pipelined offload requires xyzosr cache"
 
             N = gaussians._xyz.shape[0]
 
@@ -1603,20 +1600,17 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 scene,
                 pipe_args,
                 background,
-                args.offload,
             )
             end2end_timers.start()
 
             # ------------------------------------------------------------------------
             # 2.7: Adaptive densification (add/split/prune gaussians)
             # ------------------------------------------------------------------------
-            if args.offload:
-                # Update densification statistics based on this iteration's results
-                gsplat_densification(
-                    iteration, scene, gaussians, batched_screenspace_pkg, offload=args.offload
-                )
-            else:  
-                raise ValueError("Invalid offload value")
+            # if iteration in [8797,8798,8799,8800]:
+            #     import pdb; pdb.set_trace()
+            gsplat_densification(
+                iteration, scene, gaussians, batched_screenspace_pkg
+            )
             
             # Perform actual densification at specified intervals
             if not args.disable_auto_densification and iteration <= args.densify_until_iter and iteration > args.densify_from_iter and utils.check_update_at_this_iter(
@@ -1687,7 +1681,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             # ------------------------------------------------------------------------
             # Note: For pipelined_offload and braindeath_offload, optimizer step
             # is performed inside their respective implementations
-            if iteration < opt_args.iterations and not args.pipelined_offload and not args.braindeath_offload:
+            if iteration < opt_args.iterations and not args.final_offload and not args.braindeath_offload:
                 timers.start("optimizer_step")
 
                 # Scale gradients by batch size (unless using gradient accumulation mode)
@@ -1707,8 +1701,10 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                             sparse_indices = torch.nonzero(visibility.squeeze()).flatten().to(torch.int32)
                             sparse_indices = sparse_indices.to("cpu")
                             gaussians.optimizer.sparse_step(sparse_indices=sparse_indices)
-                        else:
+                        elif args.final_offload:
                             gaussians.optimizer.step(visibility=visibility)
+                        else:
+                            raise ValueError("Invalid offload value")
                         del visibility
                     else:
                         # Dense Adam: update all parameters
@@ -1723,7 +1719,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 utils.check_initial_gpu_memory_usage("after optimizer step")
                 
                 # Clear gradient buffer for offloading strategies
-                if args.offload and not args.braindeath_offload:
+                if args.final_offload:
                     timers.start("zero out grads")
                     gaussians.parameters_grad_buffer[:N, :].zero_()
                     timers.stop("zero out grads")
@@ -1804,7 +1800,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
 
 
 def training_report(
-    iteration, l1_loss, testing_iterations, scene: Scene, pipe_args, background, offload=False
+    iteration, l1_loss, testing_iterations, scene: Scene, pipe_args, background
 ):
     args = utils.get_args()
     log_file = utils.get_log_file()
@@ -1875,7 +1871,6 @@ def training_report(
                     camera.camtoworlds = torch.inverse(camera.world_view_transform.transpose(0, 1)).unsqueeze(0)
 
                     if args.braindeath_offload:
-                        assert args.offload
 
                         rendered_image = braindead_offload_eval_one_cam(
                             camera=camera,
@@ -1885,8 +1880,7 @@ def training_report(
                         )
                         batched_image.append(rendered_image)
                     
-                    elif args.offload:
-                        assert args.gpu_cache == "xyzosr"
+                    elif args.final_offload:
                         rendered_image = offload_eval_one_cam(
                             camera=camera,
                             gaussians=scene.gaussians,

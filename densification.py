@@ -1,7 +1,7 @@
 import torch
 import utils.general_utils as utils
 
-def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg, offload=False):
+def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg):
     args = utils.get_args()
     timers = utils.get_timers()
     log_file = utils.get_log_file()
@@ -41,7 +41,6 @@ def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg, o
             utils.check_update_at_this_iter(
                 iteration, args.bsz, args.opacity_reset_interval, 0
             )
-            and iteration + args.bsz <= args.opacity_reset_until_iter
         ):
             timers.start("reset_opacity")
             gaussians.reset_opacity()
@@ -70,9 +69,6 @@ def update_densification_stats_pipelineoffload_xyzosr(
     timers = utils.get_timers()
     log_file = utils.get_log_file()
 
-    assert args.offload
-    # assert args.pipelined_offload
-    # assert args.gpu_cache == "xyzosr"
     assert radii.shape[0] == send2gpu_final_filter_indices.shape[0], f"radii.shape[0]={radii.shape[0]}, send2gpu_final_filter_indices.shape[0]={send2gpu_final_filter_indices.shape[0]}"
     assert send2gpu_final_filter_indices.shape[0] == means2d_grad.shape[0], f"send2gpu_final_filter_indices.shape[0]={send2gpu_final_filter_indices.shape[0]}, means2d_grad.shape[0]={means2d_grad.shape[0]}"
 
