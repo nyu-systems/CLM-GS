@@ -72,10 +72,10 @@ class AuxiliaryParams(ParamGroup):
         # ====================================================================
         
         # --- Braindeath Offload (Simple Baseline) ---
-        self.braindeath_offload = False  # Enable braindeath offload mode
+        self.naive_offload = False  # Enable braindeath offload mode
         
         # --- Final Offload (Pipelined/Retention-based) ---
-        self.final_offload = False             # Enable final offload mode (required for pipelined_offload)
+        self.clm_offload = False             # Enable final offload mode (required for pipelined_offload)
         self.comm_stream_priority = -1 # by default, use -1 as the priority of the stream
         self.grid_size_H = 32            # Grid size for height dimension (used in filtering/spatial hashing)
         self.grid_size_D = 32            # Grid size for depth dimension
@@ -307,7 +307,7 @@ def find_latest_checkpoint(log_folder):
 
 def init_args(args):
 
-    assert ((args.final_offload != args.braindeath_offload) and (args.final_offload or args.braindeath_offload)),  "either final_offload or braindeath_offload must be True, and only one of them can be True"
+    assert ((args.clm_offload != args.naive_offload) and (args.clm_offload or args.naive_offload)),  "either final_offload or braindeath_offload must be True, and only one of them can be True"
 
     # Logging are saved with where model is saved.
     args.log_folder = args.model_path

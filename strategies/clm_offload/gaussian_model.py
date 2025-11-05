@@ -23,10 +23,10 @@ import utils.general_utils as utils
 from optimizer import UnifiedAdam
 import numba.cuda
 
-from scene.gaussian_model import BaseGaussianModel
+from strategies.base_gaussian_model import BaseGaussianModel
 
 
-class GaussianModelXYZOSROffload(BaseGaussianModel):
+class GaussianModelCLMOffload(BaseGaussianModel):
     """Gaussian model for xyzosr offload mode - xyz/opacity/scaling/rotation on GPU, features in CPU pinned memory"""
 
     def _get_device(self):

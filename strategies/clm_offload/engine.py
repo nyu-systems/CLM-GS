@@ -20,8 +20,7 @@ from clm_kernels import (
     spherical_harmonics_bwd_inplace
 )
 from densification import update_densification_stats_pipelineoffload_xyzosr
-from render_common import torch_compiled_loss, TILE_SIZE, calculate_filters
-from render_braindeath import pipeline_forward_one_step
+from strategies.base_engine import torch_compiled_loss, TILE_SIZE, calculate_filters, pipeline_forward_one_step
 
 
 def pipeline_forward_one_step_shs_inplace(
@@ -276,8 +275,7 @@ def cpuadam_thread(bsz,
 
     torch.cuda.nvtx.range_pop()
 
-# v5: A memory efficient version based on v4.
-def pipeline_offload_retention_optimized_v5_impl(
+def clm_offload_train_one_batch(
     gaussians,
     scene,
     batched_cameras,
@@ -732,7 +730,7 @@ def pipeline_offload_retention_optimized_v5_impl(
     return losses, ordered_cams, sparsity
 
 
-def offload_eval_one_cam(
+def clm_offload_eval_one_cam(
     camera,
     gaussians,
     background,

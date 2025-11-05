@@ -22,10 +22,10 @@ import utils.general_utils as utils
 import cpu_adam
 from utils.system_utils import mkdir_p
 
-from scene.gaussian_model import BaseGaussianModel
+from strategies.base_gaussian_model import BaseGaussianModel
 
 
-class GaussianModelBraindeathOffload(BaseGaussianModel):
+class GaussianModelNaiveOffload(BaseGaussianModel):
     """Gaussian model for braindeath_offload mode - all parameters in CPU pinned memory"""
 
     def _get_device(self):

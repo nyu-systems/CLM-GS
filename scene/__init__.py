@@ -16,7 +16,7 @@ from random import randint
 from torch.utils.data import Dataset
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
-from scene.gaussian_model import BaseGaussianModel
+from strategies.base_gaussian_model import BaseGaussianModel
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON, loadCam, predecode_dataset_to_disk, clean_up_disk, loadCam_raw_from_disk
 import utils.general_utils as utils
 import psutil

@@ -9,10 +9,10 @@ from gsplat import (
     rasterize_to_pixels,
 )
 from densification import update_densification_stats_pipelineoffload_xyzosr
-from render_common import torch_compiled_loss, TILE_SIZE, calculate_filters
+from strategies.base_engine import torch_compiled_loss, TILE_SIZE, calculate_filters, pipeline_forward_one_step
 
 
-def braindead_offload_eval_one_cam(
+def naive_offload_eval_one_cam(
     gaussians,
     scene,
     camera,
@@ -42,7 +42,7 @@ def braindead_offload_eval_one_cam(
 
 
 
-def fairBraindead_offload_impl(
+def naive_offload_train_one_batch(
     gaussians,
     scene,
     batched_cameras,
@@ -297,106 +297,3 @@ def fairBraindead_offload_impl(
 
     return losses, visibility
 
-def pipeline_forward_one_step(
-    filtered_opacity_gpu,
-    filtered_scaling_gpu,
-    filtered_rotation_gpu,
-    filtered_xyz_gpu,
-    filtered_shs,
-    camera,
-    scene,
-    gaussians,
-    background,
-    pipe_args,
-    eval=False,
-):
-    MICRO_BATCH_SIZE = 1 # NOTE: microbatch here only contains one camera.
-    image_width = int(utils.get_img_width())
-    image_height = int(utils.get_img_height())
-    tanfovx = math.tan(camera.FoVx * 0.5)
-    tanfovy = math.tan(camera.FoVy * 0.5)
-    focal_length_x = image_width / (2 * tanfovx)
-    focal_length_y = image_height / (2 * tanfovy)
-    K = torch.tensor(
-        [
-            [focal_length_x, 0, image_width / 2.0],
-            [0, focal_length_y, image_height / 2.0],
-            [0, 0, 1],
-        ],
-        device="cuda",
-    )
-    assert K.shape == (3, 3)
-
-    viewmat = camera.world_view_transform.transpose(0, 1)  # why transpose
-    n_selected = filtered_xyz_gpu.shape[0]
-
-    batched_radiis, batched_means2D, batched_depths, batched_conics, _ = (
-        fully_fused_projection(
-            means=filtered_xyz_gpu, # (N, 3)
-            covars=None,
-            quats=filtered_rotation_gpu,
-            scales=filtered_scaling_gpu,
-            viewmats=viewmat.unsqueeze(0),
-            Ks=K.unsqueeze(0),
-            width=image_width,
-            height=image_height,
-            packed=False,
-        )
-    ) # (1, N), (1, N, 2), (1, N), (1, N, 3), (1, N)
-
-    if not eval:
-        batched_means2D.retain_grad() # this is only for training. 
-
-    sh_degree = gaussians.active_sh_degree
-    # camtoworlds = torch.inverse(viewmat.unsqueeze(0)) # (4, 4)
-    camtoworlds = torch.inverse(viewmat.unsqueeze(0))
-    dirs = filtered_xyz_gpu[None, :, :] - camtoworlds[:, None, :3, 3]
-    filtered_shs = filtered_shs.reshape(1, n_selected, 16, 3)
-    batched_colors = spherical_harmonics(
-        degrees_to_use=sh_degree, dirs=dirs, coeffs=filtered_shs
-    )
-    batched_colors = torch.clamp_min(batched_colors + 0.5, 0.0) # (1, N, 3)
-    batched_opacities = filtered_opacity_gpu.squeeze(1).unsqueeze(0) # (N, 1) -> (1, N)
-
-    # NOTE: In the above code, we keep the first batch dimension, even if it is always 1. 
-
-    # render
-    # Identify intersecting tiles.
-    tile_width = math.ceil(image_width / float(TILE_SIZE))
-    tile_height = math.ceil(image_height / float(TILE_SIZE))
-
-    # flatten_ids: (C*N)
-    _, isect_ids, flatten_ids = isect_tiles(
-        means2d=batched_means2D,
-        radii=batched_radiis,
-        depths=batched_depths,
-        tile_size=TILE_SIZE,
-        tile_width=tile_width,
-        tile_height=tile_height,
-        packed=False,
-    )
-    isect_offsets = isect_offset_encode(
-        isect_ids, MICRO_BATCH_SIZE, tile_width, tile_height
-    )  # (MICRO_BATCH_SIZE, tile_height, tile_width)
-
-
-    # Rasterize to pixels. batched_rendered_image: (MICRO_BATCH_SIZE, image_height, image_width, 3)
-    backgrounds = (
-        background.repeat(MICRO_BATCH_SIZE, 1) if background is not None else None
-    )
-    rendered_image, _ = rasterize_to_pixels(
-        means2d=batched_means2D,
-        conics=batched_conics,
-        colors=batched_colors,
-        opacities=batched_opacities,
-        image_width=image_width,
-        image_height=image_height,
-        tile_size=TILE_SIZE,
-        isect_offsets=isect_offsets,
-        flatten_ids=flatten_ids,
-        backgrounds=backgrounds,
-    )
-
-    rendered_image = rendered_image.squeeze(0).permute(2, 0, 1).contiguous()
-
-    return rendered_image, batched_means2D, batched_radiis

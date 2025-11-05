@@ -34,8 +34,8 @@ from arguments import (
 )
 
 from scene import Scene, OffloadSceneDataset
-from scene.gaussian_model_fair_naive import GaussianModelBraindeathOffload
-from scene.gaussian_model_final import GaussianModelXYZOSROffload
+from strategies.naive_offload import GaussianModelNaiveOffload, naive_offload_train_one_batch, naive_offload_eval_one_cam
+from strategies.clm_offload import GaussianModelCLMOffload, clm_offload_train_one_batch, clm_offload_eval_one_cam
 
 from utils.general_utils import safe_state, prepare_output_and_logger
 import utils.general_utils as utils
@@ -44,8 +44,6 @@ from utils.image_utils import psnr
 from utils.loss_utils import l1_loss
 
 from densification import gsplat_densification
-from render_braindeath import fairBraindead_offload_impl, braindead_offload_eval_one_cam
-from render_finaloffload import pipeline_offload_retention_optimized_v5_impl, offload_eval_one_cam
 
 
 def training(dataset_args, opt_args, pipe_args, args, log_file):
@@ -87,16 +85,16 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     # 1.2: Initialize scene and gaussian model
     # ------------------------------------------------------------------------
     # Select the appropriate Gaussian model based on offload strategy
-    if args.braindeath_offload:
-        gaussians = GaussianModelBraindeathOffload(sh_degree=dataset_args.sh_degree)
-        utils.print_rank_0("Using GaussianModelBraindeathOffload")
-        log_file.write("Using GaussianModelBraindeathOffload\n")
-    elif args.final_offload:
-        gaussians = GaussianModelXYZOSROffload(sh_degree=dataset_args.sh_degree)
-        utils.print_rank_0("Using GaussianModelXYZOSROffload")
-        log_file.write("Using GaussianModelXYZOSROffload\n")
+    if args.naive_offload:
+        gaussians = GaussianModelNaiveOffload(sh_degree=dataset_args.sh_degree)
+        utils.print_rank_0("Using GaussianModelNaiveOffload")
+        log_file.write("Using GaussianModelNaiveOffload\n")
+    elif args.clm_offload:
+        gaussians = GaussianModelCLMOffload(sh_degree=dataset_args.sh_degree)
+        utils.print_rank_0("Using GaussianModelCLMOffload")
+        log_file.write("Using GaussianModelCLMOffload\n")
     else:
-        raise ValueError(f"Invalid offload configuration: braindeath_offload={args.braindeath_offload}, final_offload={args.final_offload}")
+        raise ValueError(f"Invalid offload configuration: braindeath_offload={args.naive_offload}, final_offload={args.clm_offload}")
 
     with torch.no_grad():
         scene = Scene(args, gaussians)
@@ -267,12 +265,12 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
         # ------------------------------------------------------------------------
         # 2.5: Forward/Backward Pass - Choose offloading strategy
         # ------------------------------------------------------------------------
-        if args.braindeath_offload:
+        if args.naive_offload:
             # BASELINE: Simple bulk parameter transfer strategy
             # Load all params → process all cameras → offload all gradients
             N = gaussians._xyz.shape[0]
 
-            losses, visibility = fairBraindead_offload_impl(
+            losses, visibility = naive_offload_train_one_batch(
                 gaussians,
                 scene,
                 batched_cameras,
@@ -306,14 +304,14 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             )
             log_file.write(log_string)
 
-        elif args.final_offload:
+        elif args.clm_offload:
             # OPTIMIZED: Retention-based parameter offloading with overlapped comm/compute
             # Selective loading → retention across cameras → concurrent CPU Adam
             assert args.bsz > 1, "Pipelined offload requires batch size > 1"
 
             N = gaussians._xyz.shape[0]
 
-            losses, ordered_cams, sparsity = pipeline_offload_retention_optimized_v5_impl(
+            losses, ordered_cams, sparsity = clm_offload_train_one_batch(
                 gaussians,
                 scene,
                 batched_cameras,
@@ -448,7 +446,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             # ------------------------------------------------------------------------
             # Note: For pipelined_offload and braindeath_offload, optimizer step
             # is performed inside their respective implementations
-            if iteration < opt_args.iterations and not args.final_offload and not args.braindeath_offload:
+            if iteration < opt_args.iterations and not args.clm_offload and not args.naive_offload:
                 timers.start("optimizer_step")
 
                 # Scale gradients by batch size (unless using gradient accumulation mode)
@@ -464,11 +462,11 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                     torch.cuda.nvtx.range_push("optimizer step")
                     if args.sparse_adam:
                         # Sparse Adam: only update parameters that received gradients
-                        if args.braindeath_offload:
+                        if args.naive_offload:
                             sparse_indices = torch.nonzero(visibility.squeeze()).flatten().to(torch.int32)
                             sparse_indices = sparse_indices.to("cpu")
                             gaussians.optimizer.sparse_step(sparse_indices=sparse_indices)
-                        elif args.final_offload:
+                        elif args.clm_offload:
                             gaussians.optimizer.step(visibility=visibility)
                         else:
                             raise ValueError("Invalid offload value")
@@ -486,7 +484,7 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
                 utils.check_initial_gpu_memory_usage("after optimizer step")
                 
                 # Clear gradient buffer for offloading strategies
-                if args.final_offload:
+                if args.clm_offload:
                     timers.start("zero out grads")
                     gaussians.parameters_grad_buffer[:N, :].zero_()
                     timers.stop("zero out grads")
@@ -637,9 +635,9 @@ def training_report(
                     camera.K = camera.create_k_on_gpu()
                     camera.camtoworlds = torch.inverse(camera.world_view_transform.transpose(0, 1)).unsqueeze(0)
 
-                    if args.braindeath_offload:
+                    if args.naive_offload:
 
-                        rendered_image = braindead_offload_eval_one_cam(
+                        rendered_image = naive_offload_eval_one_cam(
                             camera=camera,
                             gaussians=scene.gaussians,
                             background=background,
@@ -647,8 +645,8 @@ def training_report(
                         )
                         batched_image.append(rendered_image)
                     
-                    elif args.final_offload:
-                        rendered_image = offload_eval_one_cam(
+                    elif args.clm_offload:
+                        rendered_image = clm_offload_eval_one_cam(
                             camera=camera,
                             gaussians=scene.gaussians,
                             background=background,
