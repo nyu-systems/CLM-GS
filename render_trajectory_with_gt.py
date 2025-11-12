@@ -261,7 +261,7 @@ def render_trajectory_video(
         camera = trajectory_cameras[frame_idx]
         
         # Get ground truth image
-        gt_image = camera.original_image_backup.clone()  # [3, H, W]
+        gt_image = camera.original_image_backup.clone().cuda()  # [3, H, W]
         
         # Prepare camera matrices on GPU
         camera.world_view_transform = camera.world_view_transform.cuda()
@@ -425,15 +425,19 @@ def main():
     # Initialize Gaussian model based on offload strategy
     dataset_args = lp.extract(args)
     
+    offload_strategy = None
     if args.naive_offload:
         gaussians = GaussianModelNaiveOffload(sh_degree=dataset_args.sh_degree)
         utils.print_rank_0("Using GaussianModelNaiveOffload")
+        offload_strategy = "naive_offload"
     elif args.clm_offload:
         gaussians = GaussianModelCLMOffload(sh_degree=dataset_args.sh_degree)
         utils.print_rank_0("Using GaussianModelCLMOffload")
+        offload_strategy = "clm_offload"
     elif args.no_offload:
         gaussians = GaussianModelNoOffload(sh_degree=dataset_args.sh_degree)
         utils.print_rank_0("Using GaussianModelNoOffload (no offload, GPU-only)")
+        offload_strategy = "no_offload"
     else:
         raise ValueError(
             f"Invalid offload configuration: naive_offload={args.naive_offload}, "
@@ -495,7 +499,7 @@ def main():
     
     # Render trajectory video with GT comparison
     pipe_args = pp.extract(args)
-    video_path = os.path.join(args.output_dir, "trajectory_original_with_gt.mp4")
+    video_path = os.path.join(args.output_dir, f"trajectory_original_with_gt_{offload_strategy}.mp4")
     
     render_trajectory_video(
         args=args,
