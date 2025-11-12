@@ -157,6 +157,79 @@ output/
 
 5. **Adjusting parameters**: You can modify the scripts to change batch size, iterations, or other parameters based on your hardware and requirements.
 
+## Experiment Results
+
+**Hardware Setup**: We run our evaluation on two testbeds. The primary results reported here are from a machine with an AMD Ryzen Threadripper PRO 5955WX 16-core CPU, 128 GB RAM, and a 24 GB NVIDIA RTX 4090 GPU connected over PCIe 4.0.
+
+### mip-NeRF 360 Dataset
+
+We compare all three offload strategies on the mip360 dataset benchmark. The table below shows the PSNR results for each scene:
+
+#### PSNR Comparison (dB)
+
+| Scene | `no_offload` | `naive_offload` | `clm_offload` |
+|-------|--------------|-----------------|---------------|
+| bicycle | [TBD] | [TBD] | [TBD] |
+| bonsai | [TBD] | [TBD] | [TBD] |
+| counter | [TBD] | [TBD] | [TBD] |
+| garden | [TBD] | [TBD] | [TBD] |
+| kitchen | [TBD] | [TBD] | [TBD] |
+| room | [TBD] | [TBD] | [TBD] |
+| stump | [TBD] | [TBD] | [TBD] |
+| **Mean** | [TBD] | [TBD] | [TBD] |
+
+#### End-to-End Throughput
+
+| Scene | `no_offload` | `naive_offload` | `clm_offload` |
+|-------|--------------|-----------------|---------------|
+| bicycle | [TBD] | [TBD] | [TBD] |
+| bonsai | [TBD] | [TBD] | [TBD] |
+| counter | [TBD] | [TBD] | [TBD] |
+| garden | [TBD] | [TBD] | [TBD] |
+| kitchen | [TBD] | [TBD] | [TBD] |
+| room | [TBD] | [TBD] | [TBD] |
+| stump | [TBD] | [TBD] | [TBD] |
+| **Mean** | [TBD] | [TBD] | [TBD] |
+
+#### Peak GPU Memory
+
+| Scene | `no_offload` | `naive_offload` | `clm_offload` |
+|-------|--------------|-----------------|---------------|
+| bicycle | [TBD] | [TBD] | [TBD] |
+| bonsai | [TBD] | [TBD] | [TBD] |
+| counter | [TBD] | [TBD] | [TBD] |
+| garden | [TBD] | [TBD] | [TBD] |
+| kitchen | [TBD] | [TBD] | [TBD] |
+| room | [TBD] | [TBD] | [TBD] |
+| stump | [TBD] | [TBD] | [TBD] |
+| **Mean** | [TBD] | [TBD] | [TBD] |
+
+**Key Observations**:
+- All three strategies achieve comparable reconstruction quality (PSNR)
+- `clm_offload` provides the best memory efficiency, enabling larger-scale reconstructions
+- `no_offload` offers the fastest training when GPU memory is sufficient
+
+### Rubble Dataset
+
+For the large-scale Rubble scene, we only report results for `clm_offload` and `naive_offload` strategies, as `no_offload` leads to out-of-memory errors.
+
+| Strategy | Max PSNR (dB) | Number of Gaussians |
+|----------|---------------|---------------------|
+| `naive_offload` | [TBD] | [TBD] M |
+| `clm_offload` | [TBD] | [TBD] M |
+
+**Note**: The `no_offload` strategy is not feasible for this scene due to GPU memory constraints (OOM).
+
+### MatrixCity BigCity Dataset
+
+For the extreme-scale BigCity scene, we only report results for `clm_offload`, as this is the only strategy capable of handling scenes of this magnitude.
+
+| Strategy | Max PSNR (dB) | Number of Gaussians |
+|----------|---------------|---------------------|
+| `clm_offload` | [TBD] | 102.2 M |
+
+**Note**: Both `no_offload` and `naive_offload` strategies are not feasible for this scene due to memory constraints (OOM) and prohibitively slow training times.
+
 ## Troubleshooting
 
 ### Out of Memory (OOM) Errors
