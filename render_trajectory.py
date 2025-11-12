@@ -111,7 +111,7 @@ from arguments import (
     init_args,
 )
 
-from scene import Scene
+from scene import Scene, load_scene_info_for_rendering
 from scene.cameras import Camera
 from strategies.naive_offload import GaussianModelNaiveOffload, naive_offload_eval_one_cam
 from strategies.clm_offload import GaussianModelCLMOffload, clm_offload_eval_one_cam
@@ -126,6 +126,7 @@ from traj import (
 from utils.general_utils import safe_state
 import utils.general_utils as utils
 from utils.graphics_utils import getWorld2View2
+from utils.system_utils import searchForMaxIteration
 
 
 def create_camera_from_c2w(
@@ -179,7 +180,7 @@ def create_camera_from_c2w(
 
 
 def generate_trajectory_cameras(
-    scene: Scene,
+    train_cameras_info: list,
     traj_path: str = "interp",
     n_frames: int = 120,
     FoVx: Optional[float] = None,
@@ -191,7 +192,7 @@ def generate_trajectory_cameras(
     Generate camera trajectory for rendering.
     
     Args:
-        scene: Scene object with training cameras
+        train_cameras_info: List of training camera info objects
         traj_path: Type of trajectory ("interp", "ellipse", "spiral", "original")
         n_frames: Number of frames to generate (ignored for "original")
         FoVx, FoVy: Field of view (uses first training camera if None)
@@ -200,8 +201,7 @@ def generate_trajectory_cameras(
     Returns:
         List of Camera objects for trajectory
     """
-    # Get training cameras for reference
-    train_cameras_info = scene.getTrainCamerasInfo()
+    # Check if we have training cameras
     if len(train_cameras_info) == 0:
         raise ValueError("No training cameras found in scene")
     
@@ -457,18 +457,33 @@ def main():
             f"clm_offload={args.clm_offload}, no_offload={args.no_offload}"
         )
     
-    # Load scene and trained model
-    # Note: Scene will automatically load the PLY files from the specified iteration
+    # Load scene info and trained model
+    # Note: We load camera metadata WITHOUT decoding images to disk (rendering-only workflow)
     # The PLY files are saved at: model_path/point_cloud/iteration_{iteration}/point_cloud.ply
     with torch.no_grad():
-        utils.print_rank_0(f"\nLoading scene and model from iteration {args.iteration}...")
-        scene = Scene(args, gaussians, load_iteration=args.iteration, shuffle=False)
+        utils.print_rank_0(f"\nLoading scene info and model from iteration {args.iteration}...")
         
-        # Scene.__init__ automatically calls gaussians.load_ply() when load_iteration is set
-        # This loads the saved Gaussian parameters (xyz, features, scales, rotations, opacities)
-        # from the PLY file(s) - no need to manually load checkpoints
+        # Load scene information (camera poses, intrinsics) without image decoding
+        scene_info, cameras_extent = load_scene_info_for_rendering(args)
+        utils.print_rank_0("Loaded scene metadata (camera poses and intrinsics)")
         
-        utils.print_rank_0(f"Loaded {len(gaussians._xyz)} Gaussians from iteration {scene.loaded_iter}")
+        # Determine which iteration to load
+        if args.iteration == -1:
+            loaded_iter = searchForMaxIteration(
+                os.path.join(args.model_path, "point_cloud")
+            )
+        else:
+            loaded_iter = args.iteration
+        
+        utils.print_rank_0(f"Loading Gaussians from iteration {loaded_iter}...")
+        
+        # Manually load the trained Gaussian model from PLY file
+        ply_path = os.path.join(
+            args.model_path, "point_cloud", f"iteration_{loaded_iter}"
+        )
+        gaussians.load_ply(ply_path)
+        
+        utils.print_rank_0(f"Loaded {len(gaussians._xyz)} Gaussians from iteration {loaded_iter}")
         
         # Set active SH degree to maximum for best quality rendering
         # During training, SH degree is progressively increased
@@ -484,7 +499,7 @@ def main():
     
     # Generate trajectory cameras
     trajectory_cameras = generate_trajectory_cameras(
-        scene=scene,
+        train_cameras_info=scene_info.train_cameras,
         traj_path=args.traj_path,
         n_frames=args.n_frames,
     )
@@ -495,7 +510,7 @@ def main():
     
     render_trajectory_video(
         args=args,
-        scene=scene,
+        scene=None,  # No scene object needed for rendering
         gaussians=gaussians,
         pipe_args=pipe_args,
         trajectory_cameras=trajectory_cameras,

@@ -550,10 +550,7 @@ class GaussianModelNoOffload(BaseGaussianModel):
         self.active_sh_degree = self.max_sh_degree
 
     def load_ply(self, path):
-        if os.path.exists(os.path.join(path, "point_cloud.ply")):
-            self.one_file_load_ply(path)
-        else:
-            self.distributed_load_ply(path)
+        self.one_file_load_ply(path)
 
     def cat_replace_opacities_to_optimizer(self, opacities_new, name):
         for group in self.optimizer.param_groups:

@@ -359,6 +359,40 @@ class SceneDataset:
                 )
                 self.iteration_loss = []
 
+def load_scene_info_for_rendering(args):
+    """
+    Load scene information (camera poses, intrinsics) WITHOUT decoding images to disk.
+    This is a lightweight version for rendering-only workflows (e.g., trajectory rendering).
+    
+    Args:
+        args: Arguments containing source_path, images, eval, llffhold, etc.
+    
+    Returns:
+        tuple: (scene_info, cameras_extent) containing camera metadata and scene radius
+    """
+    # Load scene metadata based on dataset type
+    if os.path.exists(os.path.join(args.source_path, "sparse")):  
+        # COLMAP format
+        scene_info = sceneLoadTypeCallbacks["Colmap"](
+            args.source_path, args.images, args.eval, args.llffhold
+        )
+    elif "matrixcity" in args.source_path:  
+        # MatrixCity format
+        scene_info = sceneLoadTypeCallbacks["City"](
+            args.source_path,
+            args.random_background,
+            args.white_background,
+            llffhold=args.llffhold,
+        )
+    else:
+        raise ValueError("No valid dataset found in the source path")
+    
+    # Get scene extent (radius for normalization)
+    cameras_extent = scene_info.nerf_normalization["radius"]
+    
+    return scene_info, cameras_extent
+
+
 def custom_collate_fn(batch):
     return batch
 
