@@ -78,7 +78,7 @@ class AuxiliaryParams(ParamGroup):
         self.clm_offload = False             # Enable final offload mode (required for pipelined_offload)
         self.comm_stream_priority = -1 # by default, use -1 as the priority of the stream
         self.grid_size_H = 32            # Grid size for height dimension (used in filtering/spatial hashing)
-        self.grid_size_D = 32            # Grid size for depth dimension
+        self.grid_size_D = 128            # Grid size for depth dimension
         self.prealloc_capacity = 5_000_000  # Pre-allocated capacity for parameters
 
         # --- No Offload (GPU Baseline) ---
@@ -215,8 +215,6 @@ class OptimizationParams(ParamGroup):
         self.multiprocesses_image_loading = False # Disable multiprocess image loading by default to avoid out of shared memory
         self.num_train_cameras = -1
         self.num_test_cameras = -1
-
-        self.adam_type = "default_adam"  # "default_adam", "cpu_adam"
 
         self.exact_filter = True
         self.log_cpu_adam_trailing_overhead = False

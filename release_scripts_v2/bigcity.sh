@@ -55,11 +55,8 @@ DENSIFY_OPTS="--disable_auto_densification"
 # Offload configuration - CLM offload with pre-allocated capacity
 # Pre-allocate for 102M+ Gaussians
 OFFLOAD_OPTS="--clm_offload \
---adam_type cpu_adam \
 --prealloc_capacity 102_231_360 \
---sparse_adam \
---grid_size_D 128 \
---fused_adam torch_fused"
+--sparse_adam"
 
 # Monitoring settings
 MONITOR_OPTS="--enable_timer \

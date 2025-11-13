@@ -83,18 +83,12 @@ for scene in ${SCENES[@]}; do
     
     # Configure offload strategy
     if [ "$offload_strategy" = "no_offload" ]; then
-        offload_opts="--no_offload \
---fused_adam torch_fused"
+        offload_opts="--no_offload"
     elif [ "$offload_strategy" = "naive_offload" ]; then
-        offload_opts="--naive_offload \
---adam_type cpu_adam \
---fused_adam torch_fused"
+        offload_opts="--naive_offload"
     elif [ "$offload_strategy" = "clm_offload" ]; then
         offload_opts="--clm_offload \
---adam_type cpu_adam \
---prealloc_capacity 7_000_000 \
---grid_size_D 128 \
---fused_adam torch_fused" # TODO: check whether 5M is enough for mip360? 5M is not enough for garden scene. 
+--prealloc_capacity 7_000_000" # TODO: check whether 5M is enough for mip360? 5M is not enough for garden scene. 
     fi
     
     # Run training
