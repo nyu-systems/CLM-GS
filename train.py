@@ -24,6 +24,7 @@ import torch.multiprocessing
 from torch.cuda import nvtx
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import torchvision
 
 from argparse import ArgumentParser
 from arguments import (
@@ -639,7 +640,7 @@ def training_report(
             psnr_test = torch.scalar_tensor(0.0, device="cuda")
 
             # TODO: if not divisible by world size
-            num_cameras = config["num_cameras"]
+            num_cameras = min(config["num_cameras"], args.max_num_images_to_evaluate)
             eval_dataset = OffloadSceneDataset(config["cameras_info"])
             # Init dataloader: num_workers = 0
             dataloader = DataLoader(
@@ -730,6 +731,32 @@ def training_report(
                     if idx + camera_id < num_cameras + 1:
                         l1_test += l1_loss(image, gt_image).mean().double().item()
                         psnr_test += psnr(image, gt_image).mean().double().item()
+                    
+                    # Save rendered and ground-truth images
+                    if idx < args.num_save_images_during_eval:
+                        # Create output directories for train/test
+                        save_dir = os.path.join(args.model_path, config["name"])
+                        os.makedirs(save_dir, exist_ok=True)
+                        
+                        # Get the original image name (without extension)
+                        img_name = gt_camera.image_name.replace("/", "_")
+                        
+                        # Create filenames: {iteration}_{original_name}_render.png and {iteration}_{original_name}_gt.png
+                        render_filename = f"{iteration:06d}_{img_name}_render.png"
+                        gt_filename = f"{iteration:06d}_{img_name}_gt.png"
+                        
+                        # Save rendered image
+                        torchvision.utils.save_image(
+                            image,
+                            os.path.join(save_dir, render_filename)
+                        )
+                        
+                        # Save ground-truth image
+                        torchvision.utils.save_image(
+                            gt_image,
+                            os.path.join(save_dir, gt_filename)
+                        )
+                    
                     gt_camera.original_image = None
             
             psnr_test /= num_cameras

@@ -269,7 +269,7 @@ class GaussianModelCLMOffload(BaseGaussianModel):
                 + "_ws"
                 + str(n_split)
                 + ".ply"
-            )
+            ) # TODO: modify the file_name.
             mkdir_p(os.path.dirname(this_path))
 
             start = i * split_size
@@ -307,7 +307,7 @@ class GaussianModelCLMOffload(BaseGaussianModel):
                 (attribute, "f4") for attribute in self.construct_list_of_attributes()
             ]
 
-            elements = np.empty(split_size, dtype=dtype_full)
+            elements = np.empty(end - start, dtype=dtype_full)
             attributes = np.concatenate(
                 (xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1
             )

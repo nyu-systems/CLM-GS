@@ -151,6 +151,8 @@ class AuxiliaryParams(ParamGroup):
         # EXPERIMENTAL / ADVANCED FLAGS
         # ====================================================================
         self.packed = False              # Use packed representation
+
+        self.num_save_images_during_eval = 0
         
         super().__init__(parser, "Loading Parameters", sentinel)
 
@@ -219,6 +221,8 @@ class OptimizationParams(ParamGroup):
         self.exact_filter = True
         self.log_cpu_adam_trailing_overhead = False
         self.cpu_adam_trailing_overhead = {"step": 1, "from_default_stream": 0.0, "from_comm_stream": 0.0}
+
+        self.max_num_images_to_evaluate = int(1e9) # maximum number of images to evaluate during testing. 
         super().__init__(parser, "Optimization Parameters")
 
 class BenchmarkParams(ParamGroup):

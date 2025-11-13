@@ -131,7 +131,7 @@ class Scene:
         # Predecode dataset as raw files to local disk
         # If decode_dataset_path does not exist, run predecode
         if args.decode_dataset_path == "":
-            args.decode_dataset_path = os.path.join(args.source_path, "decoded_dataset")
+            args.decode_dataset_path = os.path.join(args.source_path, f"decoded_{args.images}")
             os.makedirs(args.decode_dataset_path, exist_ok=True)
             print("create folder: ", args.decode_dataset_path)
             log_file.write(f"create folder: {args.decode_dataset_path}\n")
