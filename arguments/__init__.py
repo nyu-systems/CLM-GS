@@ -86,7 +86,6 @@ class AuxiliaryParams(ParamGroup):
 
         # --- Shared Offload Optimization Flags (used by both modes) ---
         self.sparse_adam = False         # Use sparse Adam optimizer (only update visible Gaussians)
-        self.fused_adam = "torch_fused" # remove this in the future. 
         self.reorder_by_min_sparsity_at_end = True # Reorder Gaussians by minimum sparsity at end of training
         
         # ====================================================================

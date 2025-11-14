@@ -148,7 +148,7 @@ class GaussianModelCLMOffload(BaseGaussianModel):
             amsgrad=False,
             adamw_mode=False,
             fp32_optimizer_states=True,
-            fused=True if args.fused_adam == "torch_fused" else False,
+            fused=True,
             sparse=self.args.sparse_adam,
         )
                 

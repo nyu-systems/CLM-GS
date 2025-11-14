@@ -214,7 +214,7 @@ class GaussianModelNoOffload(BaseGaussianModel):
         if args.sparse_adam:
             self.optimizer = SelectiveAdam(l, eps=1e-15, betas=(0.9, 0.999))
         else:
-            self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15, fused=True if args.fused_adam == "torch_fused" else False)
+            self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15, fused=True)
 
         # Scale learning rates according to bsz
         bsz = args.bsz
