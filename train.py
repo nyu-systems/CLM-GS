@@ -71,6 +71,9 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
     # STAGE 1: INITIALIZATION
     # ============================================================================
     
+    # FIXME: add support for load_from_cpuram_on_demand
+    assert args.dataset_cache_and_stream_mode in ["load_from_disk_on_demand"], f"Only load_from_disk_on_demand is supported for now, but got {args.dataset_cache_and_stream_mode}"
+
     # ------------------------------------------------------------------------
     # 1.1: Setup auxiliary tools and GPU configuration
     # ------------------------------------------------------------------------
