@@ -65,28 +65,29 @@ class AuxiliaryParams(ParamGroup):
         # OFFLOADING CONFIGURATION
         # ====================================================================
         # There are two main offloading modes:
-        # 1. BRAINDEATH OFFLOAD: Simple baseline that loads ALL parameters to GPU,
+        # 1. NAIVE OFFLOAD: Simple baseline that loads ALL parameters to GPU,
         #    processes all cameras, then offloads ALL gradients back to CPU
-        # 2. FINAL OFFLOAD (PIPELINED): Advanced retention-based offload with
+        # 2. CLM OFFLOAD: Advanced retention-based offload with
         #    selective loading and overlapped communication/computation
         # ====================================================================
-        
-        # --- Braindeath Offload (Simple Baseline) ---
-        self.naive_offload = False  # Enable braindeath offload mode
-        
-        # --- Final Offload (Pipelined/Retention-based) ---
-        self.clm_offload = False             # Enable final offload mode (required for pipelined_offload)
-        self.comm_stream_priority = -1 # by default, use -1 as the priority of the stream
-        self.grid_size_H = 32            # Grid size for height dimension (used in filtering/spatial hashing)
-        self.grid_size_D = 128            # Grid size for depth dimension
-        self.prealloc_capacity = 5_000_000  # Pre-allocated capacity for parameters
 
         # --- No Offload (GPU Baseline) ---
         self.no_offload = False          # Enable no offload mode
 
+        # --- NAIVE Offload ---
+        self.naive_offload = False  # Enable braindeath offload mode
+        
+        # --- CLM Offload ---
+        self.clm_offload = False             # Enable final offload mode (required for pipelined_offload)
+        self.prealloc_capacity = 5_000_000  # Pre-allocated capacity for parameters
+        # --- CLM Offload Advanced Flags (you might not need to change these) ---
+        self.comm_stream_priority = -1 # by default, use -1 as the priority of the stream
+        self.grid_size_H = 32            # Grid size for height dimension (used in filtering/spatial hashing)
+        self.grid_size_D = 128            # Grid size for depth dimension
+        self.reorder_by_min_sparsity_at_end = True # Reorder Gaussians by minimum sparsity at end of training
+
         # --- Shared Offload Optimization Flags (used by both modes) ---
         self.sparse_adam = False         # Use sparse Adam optimizer (only update visible Gaussians)
-        self.reorder_by_min_sparsity_at_end = True # Reorder Gaussians by minimum sparsity at end of training
         
         # ====================================================================
         # MEMORY MANAGEMENT
