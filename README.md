@@ -68,7 +68,7 @@ We also provide multiple engineering-level memory-efficient optimizations:
 
 # Why use CLM-GS
 
-**The goal of CLM-GS is to solve GPU out-of-memory problems in 3DGS Training. **
+**The goal of CLM-GS is to solve GPU out-of-memory problems in 3DGS Training.**
 
 Traditional 3D Gaussian Splatting stores all parameters, optimizer states, and activation states on GPU, which severely limits the scene scale you can reconstruct due to GPU memory constraints (24GB on 4090). When the scene is very large and intricate, the large number of required Gaussians linearly increases memory consumption for parameters and optimizer states. When rendering high-resolution images, activation states also grow larger. As a result, GPU out-of-memory errors become a common issue. 
 
