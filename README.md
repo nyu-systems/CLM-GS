@@ -83,22 +83,36 @@ The repository contains submodules, thus please check it out with
 git clone git@github.com:nyu-systems/CLM-GS.git --recursive
 ```
 
-### A Conda Environment (FIXME)
+### A Conda Environment
 
-Ensure you have Conda, GPU with compatible driver and CUDA environment installed on your machine, as prerequisites. Then please install `PyTorch`, `Torchvision`, `Plyfile`, `tqdm` which are essential packages. 
+Ensure you have Conda, GPU with compatible driver and CUDA environment installed on your machine, as prerequisites.
 
-We provide a yml file for easy environment setup. However, you should choose the versions to match your local running environment. 
+**Note**: PyTorch version >= 2.6 is required due to the usage of `torch.nonzero_static()` API.
+
+Create and activate the conda environment:
 ```shell
-conda env create --file environment.yml
-conda activate gaussian_splatting
+conda create -n clm_gs python=3.10
+conda activate clm_gs
 ```
 
-**Additional dependencies for CLM offloading**:
-- `numba` (for pinned memory allocation)
-- `fast-tsp` (for camera ordering optimization)
-- Custom CUDA kernels in `clm_kernels/` submodule
+Install PyTorch and related packages (please install a compatible Python and PyTorch set of packages for your system), for example:
+```shell
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+```
 
-NOTES: We kept additional dependencies minimal compared to the original 3DGS. For environment setup issues, maybe you could refer to the [original 3DGS repo issue section](https://github.com/graphdeco-inria/gaussian-splatting/issues) first.
+Install additional dependencies:
+```shell
+pip install tqdm plyfile psutil numba opencv-python scipy matplotlib pandas imageio imageio-ffmpeg requests tabulate
+```
+
+Compile and Install submodules locally:
+```shell
+pip install --no-build-isolation submodules/clm_kernels
+pip install --no-build-isolation submodules/cpu-adam
+pip install submodules/fast-tsp
+pip install --no-build-isolation submodules/gsplat
+pip install --no-build-isolation submodules/simple-knn
+```
 
 ## Training
 
