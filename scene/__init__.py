@@ -48,15 +48,13 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks["Colmap"](
                 args.source_path, args.images, args.eval, args.llffhold
             )
-        elif "matrixcity" in args.source_path:  # This is for matrixcity
+        else:  # NOTE: we only support colmap format and matrixcity format dataset for now. 
             scene_info = sceneLoadTypeCallbacks["City"](
                 args.source_path,
                 args.random_background,
                 args.white_background,
                 llffhold=args.llffhold,
             )
-        else:
-            raise ValueError("No valid dataset found in the source path")
 
         if not self.loaded_iter:
             # with open(scene_info.ply_path, "rb") as src_file, open(
