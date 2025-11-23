@@ -37,15 +37,17 @@ This command will process the experiment logs and produce a CSV of training resu
 
 ## Notes on Hyperparameters
 
-1. **Pre-allocation Capacity**: `--prealloc_capacity 7_000_000` specifies the number of Gaussians to pre-allocate in CPU pinned memory when using `--clm_offload` mode. If you have limited CPU memory (< 8GB), you may encounter out-of-memory errors. In this case, reduce densification aggressiveness and lower the `--prealloc_capacity` value accordingly. 
+1. **Pre-allocation Capacity**: In `release_scripts/mip360.sh`, we have `--prealloc_capacity 7_000_000` to specify the number of Gaussians to pre-allocate in CPU pinned memory when using `--clm_offload` mode. If you have limited CPU memory (< 8GB), you may encounter out-of-memory errors. In this case, reduce densification aggressiveness and lower the `--prealloc_capacity` value accordingly. 
 
 2. **Batch Size**: We use `--bsz 4` for all scenes in these experiments. 
 
 ## Experimental Results and Performance Comparison
 
-Below are the performance metrics (test PSNR, max GPU memory usage, and number of Gaussians) for all scenes across different offloading modes. These results were obtained on our testbed: AMD Ryzen Threadripper PRO 5955WX 16-core CPU, 128 GB RAM, and NVIDIA RTX 4090 GPU over PCIe 4.0.
+Below are the performance metrics (test PSNR, max GPU memory usage, and number of Gaussians) for all scenes across different offloading modes. 
 
-### Test PSNR Comparison
+These results were obtained on our testbed: AMD Ryzen Threadripper PRO 5955WX 16-core CPU, 128 GB RAM, and NVIDIA RTX 4090 GPU over PCIe 4.0.
+
+### Test PSNR
 
 | Scene   |   CLM Offload |   Naive Offload |   No Offload |
 |:--------|--------------:|----------------:|-------------:|
