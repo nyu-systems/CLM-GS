@@ -159,6 +159,8 @@ This mode decodes JPG/PNG images into raw byte data when you first train on a da
 - **Disk Space**: The decoded dataset can be very large. Calculate the required space as: `(# of images × height × width × 3) / 1024³ GB`
 - **First-Time Setup**: Initial decoding takes time, but the decoded dataset can be reused for subsequent training runs on the same scene.
 
+If the decoded images path is corrupted or missing, simply remove the folder and rerun the decoding process.
+
 **Mode 2: "decode_images_on_demand"**
 
 This mode avoids pre-decoding images, saving disk storage space. However, decoding images on the CPU before each rendering pass is slower and consumes additional CPU computation.

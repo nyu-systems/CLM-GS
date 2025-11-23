@@ -230,8 +230,64 @@ def decompressed_images_from_camInfos_multiprocess_sharedmem(
 
     return decompressed_images
 
-def predecode_dataset_to_disk(cam_infos, args):
+def _process_single_image_for_predecode(params):
+    """Helper function to process a single image for predecoding (used by multiprocessing)"""
+    cam_info, decode_dataset_path, orig_w, orig_h = params
+    try:
+        img = Image.open(cam_info.image_path)
+        img = img.crop((0, 0, orig_w, orig_h))  # crop the image to the minimum size in dataset
+        raw_data = img.tobytes()
+        raw_data_path = os.path.join(decode_dataset_path, 'dataset_raw', (cam_info.image_name.lstrip('/') + '.raw'))
+        os.makedirs(os.path.dirname(raw_data_path), exist_ok=True)
+        with open(raw_data_path, 'wb+') as raw_file:
+            raw_file.write(raw_data)
+        img.close()
+        return True
+    except Exception as e:
+        print(f"Error processing {cam_info.image_path}: {e}")
+        return False
+
+def predecode_dataset_to_disk_multiprocess(cam_infos, args, num_workers=None):
+    """
+    Multiprocessing version of predecode_dataset_to_disk for faster processing.
+    
+    Args:
+        cam_infos: List of camera info objects
+        args: Arguments object
+        num_workers: Number of worker processes. If None, uses min(cpu_count, 16)
+    """
     args = get_args()
+    orig_h, orig_w = utils.get_img_size()
+    
+    # Create tasks for multiprocessing
+    tasks = [(c, args.decode_dataset_path, orig_w, orig_h) for c in cam_infos]
+    
+    # Use multiprocessing with reasonable number of workers
+    # Cap at 16 to avoid too many open files and resource contention
+    if num_workers is None:
+        num_workers = min(multiprocessing.cpu_count(), 16)
+    
+    print(f"Using {num_workers} worker processes for image predecoding")
+    
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        list(
+            tqdm(
+                pool.imap(_process_single_image_for_predecode, tasks),
+                total=len(cam_infos),
+                desc="Predecoding images to disk (multiprocess)"
+            )
+        )
+
+
+
+def predecode_dataset_to_disk(cam_infos, args):
+    """Original single-threaded version"""
+    args = get_args()
+    if args.multiprocesses_decode_dataset_to_disk:
+        # Use multiprocessing to decode dataset to disk
+        predecode_dataset_to_disk_multiprocess(cam_infos, args)
+        return
+
     orig_h, orig_w = utils.get_img_size()
     for id, c in tqdm(enumerate(cam_infos), total=len(cam_infos)):
         img = Image.open(c.image_path)

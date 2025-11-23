@@ -98,6 +98,7 @@ class AuxiliaryParams(ParamGroup):
         # ====================================================================
         self.dataset_cache_and_stream_mode = "load_from_disk_on_demand" # or "load_from_cpuram_on_demand"
         self.decode_dataset_path = ""  # Path for decoded dataset storage
+        self.multiprocesses_decode_dataset_to_disk = True
         self.num_workers = 0             # Number of worker threads for data loading
         self.sharing_strategy = "default" # PyTorch multiprocessing sharing strategy: "default" ("file_descriptor"), or "file_system"
         self.llffhold = 8                # LLFF dataset hold-out value
