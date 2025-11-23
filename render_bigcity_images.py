@@ -133,12 +133,6 @@ from strategies.naive_offload import GaussianModelNaiveOffload, naive_offload_ev
 from strategies.clm_offload import GaussianModelCLMOffload, clm_offload_eval_one_cam
 from strategies.no_offload import GaussianModelNoOffload, baseline_accumGrads_micro_step
 
-from traj import (
-    generate_interpolated_path,
-    generate_ellipse_path_z,
-    generate_spiral_path,
-)
-
 from utils.general_utils import safe_state, PILtoTorch, get_args, get_log_file
 import utils.general_utils as utils
 from utils.graphics_utils import getWorld2View2
