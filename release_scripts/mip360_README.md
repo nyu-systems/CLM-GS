@@ -82,3 +82,7 @@ These results were obtained on our testbed: AMD Ryzen Threadripper PRO 5955WX 16
 | kitchen |       1768105 |         1760823 |      1776933 |
 | room    |       1543490 |         1541171 |      1551058 |
 | stump   |       4729374 |         4873021 |      4752599 |
+
+## Reference
+
+Barron, Jonathan T. et al. *Mip-NeRF 360: Unbounded Anti-Aliased Neural Radiance Fields*. CVPR, 2022.

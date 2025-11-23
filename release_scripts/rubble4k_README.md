@@ -109,3 +109,5 @@ Note: The rubble4k_28M_no_offload experiment runs out of memory (OOM) because a 
 | rubble4k_28m_clm_offload   | 26.75       | 28.3         | 27992096   | 13.0                  | 12.32                    | 24757.44            |
 | rubble4k_28m_naive_offload | 26.72       | 28.19        | 27385268   | 19.03                 | 14.58                    | 40820.35            |
 | rubble4k_28M_no_offload    | OOM         | OOM          | OOM        | OOM                   | OOM                      | OOM                 |
+
+## Reference

@@ -116,3 +116,6 @@ The `clm_offload` strategy demonstrates significant memory efficiency while main
 | bigcity_25m_clm_offload_25M   | 24.63       | 25.9         | 25557840   | 5.64                  | 10.04                    | 6029.05             |
 | bigcity_25m_naive_offload_25M | 24.29       | 25.12        | 25557840   | 12.13                 | 19.87                    | 10187.07            |
 | bigcity_25M_no_offload        | OOM         | OOM          | OOM        | OOM                   | OOM                      | OOM                 |
+
+## Reference
+
