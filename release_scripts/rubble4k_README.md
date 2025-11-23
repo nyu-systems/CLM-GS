@@ -93,7 +93,7 @@ We use `--save_tensors` in these scripts, which saves `.pt` files instead of `.p
 
 We train for 100000 images times in this `rubble4k.sh` script. 
 
-# Rubble 4K Experiment Results
+## Rubble 4K Experiment Results
 
 Below are the performance metrics (PSNR, max GPU memory usage, and number of Gaussians etc) across different offloading modes and model sizes. 
 
