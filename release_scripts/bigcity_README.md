@@ -100,6 +100,10 @@ For `clm_offload`, the script pre-allocates 102 Millions gaussians capacity in C
 
 Training begins by decoding all JPEG images to raw format and saving them locally to disk. This step significantly improves data loading speed during training. Because the BigCity dataset is very large (the decoded images use about 500GB of disk space), ensure you have sufficient disk space before starting. Decoding is required only once, and future training runs will reuse already-decoded images if they exist. For optimal performance, use a fast local drive (avoid network storage such as NFS), and please refer to the **Dataset Caching and Streaming** section in `README.md` for further information. 
 
+### Sparse Adam Optimizer
+
+We use the `--sparse_adam` flag in this script, as it is required to reach the intended PSNR performance in our native experiments.
+
 ### Checkpoints Saving
 
 We use `--save_tensors` in these scripts, which saves `.pt` files instead of `.ply` files for checkpoints because `.pt` is faster and consumes less CPU memory. This is a necessary flag. 

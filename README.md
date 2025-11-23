@@ -76,7 +76,7 @@ Traditional 3D Gaussian Splatting stores all parameters, optimizer states, and a
 
 ## Setup
 
-### Cloning the Repository (FIXME)
+### Cloning the Repository
 
 The repository contains submodules, thus please check it out with 
 ```shell
@@ -238,7 +238,7 @@ All experiments were conducted on:
 
 The Mip-NeRF 360 dataset provides standard benchmark scenes for evaluating quality and performance. While these scenes are small enough to fit in GPU memory, they serve as a baseline to verify that CLM offloading maintains quality while reducing memory usage.
 
-📖 **[Complete Mip360 Tutorial](release_scripts_v3/mip360_README.md)**
+📖 **[Complete Mip360 Tutorial](release_scripts/mip360_README.md)**
 
 ---
 
@@ -246,7 +246,7 @@ The Mip-NeRF 360 dataset provides standard benchmark scenes for evaluating quali
 
 The MegaNeRF Rubble scene at 4K resolution represents a real-world large-scale outdoor scene that exceeds standard GPU memory capacity. This example demonstrates CLM's ability to train a real-world large-scale scene from scratch. 
 
-📖 **[Complete Rubble 4K Tutorial](release_scripts_v3/rubble4k_README.md)**
+📖 **[Complete Rubble 4K Tutorial](release_scripts/rubble4k_README.md)**
 
 ---
 
@@ -254,7 +254,7 @@ The MegaNeRF Rubble scene at 4K resolution represents a real-world large-scale o
 
 The MatrixCity BigCity dataset represents the extreme upper bound of scene reconstruction with synthetic city-scale environments. This demonstrates CLM's capability to handle 100 million Gaussians. This serves as a stress test, requiring 128GB RAM and 24GB GPU memory to successfully train with 100 million Gaussians. 
 
-📖 **[Complete BigCity Tutorial](release_scripts_v3/bigcity_README.md)**
+📖 **[Complete BigCity Tutorial](release_scripts/bigcity_README.md)**
 
 ---
 

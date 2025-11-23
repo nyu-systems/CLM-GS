@@ -26,7 +26,7 @@ from strategies.base_gaussian_model import BaseGaussianModel
 
 
 class GaussianModelNaiveOffload(BaseGaussianModel):
-    """Gaussian model for braindeath_offload mode - all parameters in CPU pinned memory"""
+    """Gaussian model for naive_offload mode - all parameters in CPU pinned memory"""
 
     def _get_device(self):
         return "cpu"
@@ -98,7 +98,7 @@ class GaussianModelNaiveOffload(BaseGaussianModel):
         args = utils.get_args()
         log_file = utils.get_log_file()
         
-        # Setup the optimizer for braindeath_offload
+        # Setup the optimizer for naive_offload
         l = [
             {
                 "params": [self._xyz],
@@ -622,7 +622,7 @@ class GaussianModelNaiveOffload(BaseGaussianModel):
             "Number of split gaussians: {}\n".format(selected_pts_mask.sum().item())
         )
 
-        # For braindeath_offload, all parameters are on CPU
+        # For naive_offload, all parameters are on CPU
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
         new_scaling = self.scaling_inverse_activation(
@@ -665,7 +665,7 @@ class GaussianModelNaiveOffload(BaseGaussianModel):
             "Number of cloned gaussians: {}\n".format(selected_pts_mask.sum().item())
         )
 
-        # For braindeath_offload, all parameters are on CPU
+        # For naive_offload, all parameters are on CPU
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
         new_features_rest = self._features_rest[selected_pts_mask]

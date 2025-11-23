@@ -55,16 +55,6 @@ from densification import gsplat_densification
 def training(dataset_args, opt_args, pipe_args, args, log_file):
     """
     Main training loop for Gaussian Splatting with parameter offloading.
-    
-    This function orchestrates the entire training process:
-    1. Initialize scene, gaussians, and data loaders
-    2. Main iteration loop: load data → forward/backward → optimize → densify
-    3. Periodic evaluation, checkpointing, and logging
-    4. Cleanup and final statistics reporting
-    
-    The training supports two main offloading strategies:
-    - braindeath_offload: Simple baseline with bulk parameter transfers
-    - pipelined_offload: Sophisticated retention-based approach with overlapped comm/compute
     """
     
     # ============================================================================
@@ -497,8 +487,8 @@ def training(dataset_args, opt_args, pipe_args, args, log_file):
             # ------------------------------------------------------------------------
             # 2.11: Optimizer step (for non-overlapped strategies only)
             # ------------------------------------------------------------------------
-            # Note: For pipelined_offload and braindeath_offload, optimizer step
-            # is performed inside their respective implementations
+            # Note: For clm_offload and naive_offload, optimizer step
+            # is performed inside their respective engine implementations
             if iteration < opt_args.iterations and not args.clm_offload and not args.naive_offload:
                 timers.start("optimizer_step")
 

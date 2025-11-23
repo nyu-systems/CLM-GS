@@ -75,7 +75,7 @@ class AuxiliaryParams(ParamGroup):
         self.no_offload = False          # Enable no offload mode
 
         # --- NAIVE Offload ---
-        self.naive_offload = False  # Enable braindeath offload mode
+        self.naive_offload = False  # Enable naive offload mode
         
         # --- CLM Offload ---
         self.clm_offload = False             # Enable final offload mode (required for pipelined_offload)
