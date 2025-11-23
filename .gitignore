@@ -20,3 +20,6 @@ data
 results
 _major-revision-scripts/
 deprecated
+release_scripts_v1/
+release_scripts_v1_output/
+run_all.sh
