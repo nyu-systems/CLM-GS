@@ -37,7 +37,7 @@ This command will process the experiment logs and produce a CSV of training resu
 
 ## Notes on Hyperparameters
 
-1. **Pre-allocation Capacity**: In `release_scripts/mip360.sh`, we have `--prealloc_capacity 7_000_000` to specify the number of Gaussians to pre-allocate in CPU pinned memory when using `--clm_offload` mode. If you have limited CPU memory (< 8GB), you may encounter out-of-memory errors. In this case, reduce densification aggressiveness and lower the `--prealloc_capacity` value accordingly. 
+1. **Pre-allocation Capacity**: In `release_scripts/mip360.sh`, we have `--prealloc_capacity 7_000_000` to specify the number of Gaussians to pre-allocate in CPU pinned memory when using `--clm_offload` mode. If you have limited CPU memory (< 8GB), you may encounter CPU out-of-memory errors. In this case, you should reduce densification aggressiveness and lower the `--prealloc_capacity` value accordingly. 
 
 2. **Batch Size**: We use `--bsz 4` for all scenes in these experiments. 
 
