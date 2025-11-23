@@ -36,15 +36,19 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 # Define scenes to train
 SCENES=(counter bicycle stump garden room bonsai kitchen)
+# SCENES=(bicycle garden)
 
 # Training configurations
 BSZ=4
 ITERATIONS=30000
+# ITERATIONS=3000
 LOG_INTERVAL=250
 
 # Test and save iterations
-TEST_ITERATIONS="7000 15000 30000"
+TEST_ITERATIONS="7000 30000"
+# TEST_ITERATIONS="3000"
 SAVE_ITERATIONS="7000 30000"
+# SAVE_ITERATIONS=""
 
 # Monitoring settings
 MONITOR_OPTS="--enable_timer \
@@ -79,18 +83,12 @@ for scene in ${SCENES[@]}; do
     
     # Configure offload strategy
     if [ "$offload_strategy" = "no_offload" ]; then
-        offload_opts="--no_offload \
---fused_adam torch_fused"
+        offload_opts="--no_offload"
     elif [ "$offload_strategy" = "naive_offload" ]; then
-        offload_opts="--naive_offload \
---adam_type cpu_adam \
---fused_adam torch_fused"
+        offload_opts="--naive_offload"
     elif [ "$offload_strategy" = "clm_offload" ]; then
         offload_opts="--clm_offload \
---adam_type cpu_adam \
---prealloc_capacity 5_000_000 \
---grid_size_D 128 \
---fused_adam torch_fused" # TODO: check whether 5M is enough for mip360?
+--prealloc_capacity 7_000_000"
     fi
     
     # Run training
@@ -108,7 +106,7 @@ for scene in ${SCENES[@]}; do
         ${offload_opts} \
         ${MONITOR_OPTS} \
         --eval
-    
+
     if [ $? -ne 0 ]; then
         echo "Error: Training failed for scene $scene"
         exit 1
