@@ -138,12 +138,20 @@ python train.py -s <path to COLMAP dataset> --clm_offload --bsz 4
 
 ## Considerations about the flags
 
-### **Three offloading strategies** (FIXME)
+### **Three offloading strategies**
 
 To be simple, `no_offload` is just a GPU-only training baseline for the other two offloading strategies to compare. 
 And the `naive_offload` is an easy implementation but it is slow and cannot handle extreme large scene; CLM is fast and can support even larger gaussians model. 
 
-TODO: maybe draw a table?
+For your reference, the table below compares GPU memory usage and training time across different scenes (102M means 102 millions gaussians)on our RTX 4090 testbed: 
+
+| Strategy        | Bicycle (6M)           | Rubble 4K (10M)        | Rubble 4K (28M)        | BigCity Aerial (102M)  |
+|:----------------|:-----------------------|:-----------------------|:-----------------------|:-----------------------|
+| `no_offload`    | 8.21 GB / 734 s          | 16.81 GB / 11702 s     | OOM                    | OOM                    |
+| `naive_offload` | 4.80 GB / 2481 s          | 9.32 GB / 22254 s      | 19.03 GB / 40820 s     | OOM                    |
+| `clm_offload`   | 3.01 GB / 1348 s          | 7.05 GB / 12381 s      | 13.0 GB / 24757 s      | 20.79 GB / 11783 s     |
+
+For detailed experimental setups and results, see the `Example Usages` section below.
 
 ### **Dataset Caching and Streaming**
 
@@ -230,7 +238,7 @@ Learning rate and momentum are scaled according to Grendel-GS rules when increas
 
 This section demonstrates CLM-GS on three different scales of scenes, from small benchmarks to extreme-scale reconstructions. Each example includes detailed reproduction instructions and usage pipelines.
 
-## Experimental Setup
+## Our Testbed
 
 All experiments were conducted on:
 - **Hardware**: AMD Ryzen Threadripper PRO 5955WX (16-core), 128GB RAM, NVIDIA RTX 4090 24GB
