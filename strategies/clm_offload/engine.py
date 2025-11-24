@@ -18,7 +18,7 @@ from clm_kernels import (
     send_shs2cpu_grad_buffer_stream_retention,
     spherical_harmonics_bwd_inplace,
 )
-from densification import update_densification_stats_pipelineoffload_xyzosr
+from densification import update_densification_stats_offload_accum_grads
 from strategies.base_engine import (
     torch_compiled_loss,
     TILE_SIZE,
@@ -834,7 +834,7 @@ def clm_offload_train_one_batch(
         # ------------------------------------------------------------------------
         # 4.7: Update densification statistics (for adaptive gaussian control)
         # ------------------------------------------------------------------------
-        update_densification_stats_pipelineoffload_xyzosr(
+        update_densification_stats_offload_accum_grads(
             scene,
             gaussians,
             int(utils.get_img_height()),

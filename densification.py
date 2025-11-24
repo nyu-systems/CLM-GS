@@ -56,7 +56,7 @@ def gsplat_densification(iteration, scene, gaussians, batched_screenspace_pkg):
             )
 
 
-def update_densification_stats_pipelineoffload_xyzosr(
+def update_densification_stats_offload_accum_grads(
     scene,
     gaussians,
     image_height,
@@ -102,7 +102,7 @@ def update_densification_stats_pipelineoffload_xyzosr(
             )
 
 
-def update_densification_stats_baseline_accumGrads(
+def update_densification_stats_baseline_accum_grads(
     scene,
     gaussians,
     image_height,

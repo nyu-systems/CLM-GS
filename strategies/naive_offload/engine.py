@@ -8,7 +8,7 @@ from gsplat import (
     isect_offset_encode,
     rasterize_to_pixels,
 )
-from densification import update_densification_stats_pipelineoffload_xyzosr
+from densification import update_densification_stats_offload_accum_grads
 from strategies.base_engine import (
     torch_compiled_loss,
     TILE_SIZE,
@@ -227,7 +227,7 @@ def naive_offload_train_one_batch(
         with torch.no_grad():
             # Update densification state.
             # import pdb; pdb.set_trace()
-            update_densification_stats_pipelineoffload_xyzosr(
+            update_densification_stats_offload_accum_grads(
                 scene,
                 gaussians,
                 int(utils.get_img_height()),

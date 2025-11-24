@@ -8,7 +8,7 @@ from gsplat import (
     isect_offset_encode,
     rasterize_to_pixels,
 )
-from densification import update_densification_stats_baseline_accumGrads
+from densification import update_densification_stats_baseline_accum_grads
 from strategies.base_engine import torch_compiled_loss
 
 
@@ -146,7 +146,7 @@ def baseline_accumGrads_impl(
         torch.cuda.nvtx.range_push("update stats")
         with torch.no_grad():
             # Update densification state.
-            update_densification_stats_baseline_accumGrads(
+            update_densification_stats_baseline_accum_grads(
                 scene,
                 gaussians,
                 int(utils.get_img_height()),
