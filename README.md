@@ -32,7 +32,6 @@ _<h4>✨ Accepted to appear in ASPLOS 2026 ✨</h4>_
 # Overview
 
 CLM enables training of large-scale 3D Gaussian Splatting scenes that exceed GPU memory capacity by also exploiting CPU memory. 
-<!-- We explore optimal memory management strategies for 3DGS by training using both GPU and CPU simultaneously, offloading model states and computation to CPU.  -->
 
 By using CLM offloading, your 3DGS training can:
 - **Train large-scale scenes** with 100+ million Gaussians on a single 24GB GPU and 128GB RAM
@@ -40,14 +39,9 @@ By using CLM offloading, your 3DGS training can:
 - **Work with existing rendering kernels**: We use off-the-shelf rendering kernels from gsplat. Our offloading design is orthogonal to these rendering kernels, making it easy to integrate with your own splatting pipelines
 
 This codebase provides three modes of memory-efficient training strategies for your reference:
-- **no_offload**: 3DGS training only on GPU. We optimize memory usage with engineering tricks on a single GPU. This serves as a baseline for the two offloading modes below. (see `strategies/no_offload`)
-- **naive_offload**: A simple CPU offloading implementation that stores all Gaussian attributes (xyz, etc.) and their optimizer states on CPU, loads parameters onto GPU in each iteration, and offloads gradients back to CPU in each batch. This demonstrates the simplest offloading strategy, though it is slower. (see `strategies/naive_offload`)
-- **clm_offload**: Our most sophisticated offloading design that keeps selection-critical attributes on GPU while offloading others to CPU along with their optimizer states. It reduces memory usage to the extreme while maintaining good speed. The code is more complex but highly efficient. (see `strategies/clm_offload`) 
-
-We also provide multiple engineering-level memory-efficient optimizations: 
-- Store the dataset on disk and stream data on-demand to reduce RAM and GPU memory consumption. 
-- Frequently release memory and reduce memory fragmentation. 
-- Set `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to reduce memory fragmentation. 
+- **no_offload**: 3DGS training only on GPU. We optimize memory usage with engineering tricks on a single GPU. This serves as a baseline for the two offloading modes below. (Implemented in `strategies/no_offload`)
+- **naive_offload**: A simple CPU offloading implementation that stores all Gaussian attributes (xyz, etc.) and their optimizer states on CPU, loads parameters onto GPU in each iteration, and offloads gradients back to CPU in each batch. This demonstrates the simplest offloading strategy, though it is slower. (Implemented in `strategies/naive_offload`)
+- **clm_offload**: Our most sophisticated offloading design that keeps selection-critical attributes on GPU while offloading others to CPU along with their optimizer states. It reduces memory usage to the extreme while maintaining good speed. The code is more complex but highly efficient. (Implemented in  `strategies/clm_offload`) 
 
 **Table of contents**
 -----
@@ -58,6 +52,7 @@ We also provide multiple engineering-level memory-efficient optimizations:
     - [Consideration about the flags](#considerations-about-the-flags)
 - [Example Usages](#example-usages)
 - [Paper](#paper-and-citation)
+- [Implementation Details](#implementation-details)
 - [License](#license)
 - [Reference](#reference)
 ------
@@ -66,7 +61,16 @@ We also provide multiple engineering-level memory-efficient optimizations:
 
 **The goal of CLM-GS is to solve GPU out-of-memory problems in 3DGS Training.**
 
-Traditional 3D Gaussian Splatting stores all parameters, optimizer states, and activation states on GPU, which severely limits the scene scale you can reconstruct due to GPU memory constraints (24GB on 4090). When the scene is very large and intricate, the large number of required Gaussians linearly increases memory consumption for parameters and optimizer states. When rendering high-resolution images, activation states also grow larger. As a result, GPU out-of-memory errors become a common issue. 
+Traditional 3D Gaussian Splatting stores all parameters, optimizer states, and activation states on GPU, which severely limits the scene scale you can reconstruct due to GPU memory constraints (24GB on 4090). When the scene is very large and intricate, the large number of required Gaussians linearly increases memory consumption for parameters and optimizer states. When rendering high-resolution images, activation states also grow larger. As a result, GPU out-of-memory errors become a common issue.
+
+CLM-GS addresses these memory constraints effectively. The table below compares GPU memory usage and training time across different scenes (102M means 102 million Gaussians) on our RTX 4090 testbed:
+
+| Strategy        | Bicycle (6M)           | Rubble 4K (10M)        | Rubble 4K (28M)        | BigCity Aerial (102M)  |
+|:----------------|:-----------------------|:-----------------------|:-----------------------|:-----------------------|
+| `no_offload`    | 8.21 GB / 734 s          | 16.81 GB / 11702 s     | OOM                    | OOM                    |
+| `naive_offload` | 4.80 GB / 2481 s          | 9.32 GB / 22254 s      | 19.03 GB / 40820 s     | OOM                    |
+| `clm_offload`   | 3.01 GB / 1348 s          | 7.05 GB / 12381 s      | 13.0 GB / 24757 s      | 20.79 GB / 11783 s     |
+
 
 # How to use CLM-GS
 
@@ -137,17 +141,9 @@ python train.py -s <path to COLMAP dataset> --clm_offload --bsz 4
 ### **Three offloading strategies**
 
 To be simple, `no_offload` is just a GPU-only training baseline for the other two offloading strategies to compare. 
-And the `naive_offload` is an easy implementation but it is slow and cannot handle extreme large scene; CLM is fast and can support even larger gaussians model. 
+And the `naive_offload` is an easy implementation but it is slow and cannot handle extreme large scene; CLM is fast and can support even larger Gaussians model. 
 
-For your reference, the table below compares GPU memory usage and training time across different scenes (102M means 102 millions gaussians)on our RTX 4090 testbed: 
-
-| Strategy        | Bicycle (6M)           | Rubble 4K (10M)        | Rubble 4K (28M)        | BigCity Aerial (102M)  |
-|:----------------|:-----------------------|:-----------------------|:-----------------------|:-----------------------|
-| `no_offload`    | 8.21 GB / 734 s          | 16.81 GB / 11702 s     | OOM                    | OOM                    |
-| `naive_offload` | 4.80 GB / 2481 s          | 9.32 GB / 22254 s      | 19.03 GB / 40820 s     | OOM                    |
-| `clm_offload`   | 3.01 GB / 1348 s          | 7.05 GB / 12381 s      | 13.0 GB / 24757 s      | 20.79 GB / 11783 s     |
-
-For detailed experimental setups and results, see the `Example Usages` section below.
+For detailed experimental setups and performance comparisons, see the "Why use CLM-GS?" section above and the `Example Usages` section below.
 
 ### **Dataset Caching and Streaming**
 
@@ -261,6 +257,24 @@ The MegaNeRF Rubble scene at 4K resolution represents a real-world large-scale o
 The MatrixCity BigCity dataset represents the extreme upper bound of scene reconstruction with synthetic city-scale environments. This demonstrates CLM's capability to handle 100 million Gaussians. This serves as a stress test, requiring 128GB RAM and 24GB GPU memory to successfully train with 100 million Gaussians. 
 
 📖 **[Complete BigCity Tutorial](release_scripts/bigcity_README.md)**
+
+---
+
+# Implementation Details
+
+This section covers engineering-level optimizations implemented in CLM-GS for efficient memory management:
+
+## Memory-Efficient Optimizations
+
+CLM-GS includes several low-level optimizations to maximize memory efficiency:
+
+- **Disk-based dataset streaming**: The dataset is stored on disk and streamed on-demand to reduce both RAM and GPU memory consumption. This is particularly important for extremely large datasets that cannot be fully decoded into CPU RAM.
+
+- **Aggressive memory management**: The codebase frequently releases memory and reduces memory fragmentation throughout the training process.
+
+- **PyTorch memory allocation**: Setting `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` reduces memory fragmentation in PyTorch's CUDA memory allocator. This environment variable is included in all training commands in the examples above.
+
+These optimizations work in conjunction with the three offloading strategies to achieve maximum memory efficiency across different hardware configurations.
 
 ---
 
