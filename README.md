@@ -52,10 +52,10 @@ This codebase provides three modes of memory-efficient training strategies for y
     - [Consideration about the flags](#considerations-about-the-flags)
 - [Example Usages](#example-usages)
 - [Paper](#paper-and-citation)
-- [Implementation Details](#implementation-details)
 - [License](#license)
 - [Reference](#reference)
 ------
+<!-- - [Implementation Details](#implementation-details) -->
 
 # Why use CLM-GS
 
