@@ -297,9 +297,9 @@ The `strategies/` folder contains the core implementations. We implement a base 
 
 Each strategy is explained in detail below:
 
-- 📖 **[`--no_offload` Strategy](strategies/no_offload/README.md)**
-- 📖 **[`--naive_offload` Strategy](strategies/naive_offload/README.md)**
-- 📖 **[`--clm_offload` Strategy](strategies/clm_offload/README.md)**
+- 📖 **[Overview of `--no_offload` Strategy](strategies/no_offload/README.md)**
+- 📖 **[Overview of `--naive_offload` Strategy](strategies/naive_offload/README.md)**
+- 📖 **[Overview of `--clm_offload` Strategy](strategies/clm_offload/README.md)**
 
 
 <!-- # Implementation Details

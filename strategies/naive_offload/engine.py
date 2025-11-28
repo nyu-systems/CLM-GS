@@ -50,11 +50,10 @@ def naive_offload_train_one_batch(
     gaussians, scene, batched_cameras, background, sparse_adam=False
 ):
     """
-    Simple "braindead" offload implementation for baseline comparison.
+    A naive offload implementation for 3DGS.
 
     Strategy: Load ALL parameters to GPU once, process all cameras sequentially,
-    then offload ALL gradients back to CPU. This is simpler but less memory-efficient
-    than retention-based approaches like pipeline_offload_retention_optimized_v5.
+    then offload ALL gradients back to CPU. 
 
     The pipeline has 4 stages:
     1. Setup: Load all parameters to GPU and calculate visibility filters
@@ -78,7 +77,7 @@ def naive_offload_train_one_batch(
 
     with torch.no_grad():
         # Load ALL gaussian parameters from CPU to GPU at once
-        # Unlike retention-based methods, we don't selectively load parameters per camera
+        # Unlike CLM_offload, we don't selectively load parameters per camera
         torch.cuda.nvtx.range_push("load parameters to gpu")
         xyz_gpu = gaussians._xyz.detach().to("cuda")
         _opacity_gpu = gaussians._opacity.detach().to("cuda")
