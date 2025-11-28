@@ -42,9 +42,9 @@ class GaussianModelNaiveOffload(BaseGaussianModel):
         print("Number of points before initialization : ", N)
 
         dist2 = torch.clamp_min(
-            distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float()),
+            distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
             0.0000001,
-        )
+        ).cpu()
         scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
 
         if subsample_ratio != 1.0:
