@@ -346,17 +346,13 @@ def clm_offload_train_one_batch(
     perm_generator,
 ):
     """
-    Pipeline training with retention-based parameter offloading optimization.
-
-    Main idea: Instead of loading all parameters each image render, track which parameters
-    are visible across consecutive cameras and retain them on GPU to minimize CPU<->GPU transfers.
+    CLM Offload training 3D Gaussian Splatting on one batch of camera views.
 
     The pipeline has 5 stages:
-    1. Setup: Calculate visibility filters and sort cameras for optimal caching
-    2. Concurrent CPU Adam: Start background thread for CPU-side parameter updates
-    3. Initialize training state: Gradients, streams, retention buffers
-    4. Main loop: Process each micro-batch with overlapped comm and compute
-    5. Finalize: Complete optimizer steps and synchronize
+    1. Setup: Load all parameters to GPU and calculate visibility filters
+    2. Initialize: Allocate gradient buffers on both CPU (pinned) and GPU
+    3. Main loop: Process each camera sequentially, accumulating gradients on GPU
+    4. Finalize: Offload all gradients to CPU and perform optimizer step
     """
 
     # ============================================================================
